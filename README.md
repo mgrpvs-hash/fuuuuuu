@@ -1,19 +1,25 @@
-# Beginner Python Telegram Bot
+# Room Payment Telegram Bot
 
-This project is a simple, beginner-friendly Telegram bot built with
+This project is a Telegram bot built with
 [`python-telegram-bot`](https://github.com/python-telegram-bot/python-telegram-bot).
+It uses inline keyboards and in-memory storage for wallet, room, and request data.
 
-## What this bot does
+## Features
 
-- Responds to `/start` with a welcome message
-- Echoes back any text message you send
-- Loads your bot token from a `.env` file
+- Main menu with:
+  - Connect Wallet
+  - Create Room
+  - My Rooms
+  - Rules (empty)
+- Admin-confirmed room creation payment flow
+- Invite links in format: `t.me/<bot_username>?start=room_<id>`
+- Creator-confirmed join payment flow
 
 ## Project files
 
-- `bot.py` - main bot code
+- `bot.py` - full bot logic
 - `requirements.txt` - Python dependencies
-- `.env.example` - example environment variables file
+- `.env.example` - environment variable template
 
 ## Quick run (no virtual environment)
 
@@ -24,66 +30,45 @@ cp .env.example .env
 python3 bot.py
 ```
 
-## Step-by-step setup and run
+## Step-by-step setup
 
-### 1) Create a Telegram bot and get a token
+### 1) Get a bot token
 
-1. Open Telegram and search for **@BotFather**
-2. Send `/newbot` and follow the prompts
-3. Copy the token BotFather gives you (looks like `123456:ABC...`)
+1. Open Telegram and find **@BotFather**
+2. Send `/newbot`
+3. Copy your token
 
-### 2) Install Python (if needed)
-
-Check that Python 3.10+ is installed:
-
-```bash
-python3 --version
-```
-
-If Python is missing, install it from your package manager or from
-https://www.python.org/downloads/
-
-### 3) Install dependencies (no venv)
+### 2) Install dependencies
 
 ```bash
 python3 -m pip install --user -r requirements.txt
 ```
 
-If your environment does not allow global installs, `--user` installs to your home
-directory instead.
-
-### 4) Create your `.env` file
-
-Copy the example file:
+### 3) Configure `.env`
 
 ```bash
 cp .env.example .env
 ```
 
-Open `.env` and set your token:
+Then edit `.env`:
 
 ```env
 BOT_TOKEN=your_real_bot_token_here
 ```
 
-### 5) Run the bot
+### 4) Run bot
 
 ```bash
 python3 bot.py
 ```
 
-You should see:
+## How to use in Telegram
 
-```text
-Bot is running. Press Ctrl+C to stop.
-```
+1. Send `/start`
+2. Press **Connect Wallet** and send wallet address
+3. Press **Create Room** and enter amount
+4. Press **Confirm Payment** (admin confirms/rejects)
+5. Open **My Rooms** to see your rooms and invite links
+6. Invite users using the room link
 
-### 6) Test in Telegram
-
-1. Open your bot chat
-2. Send `/start` -> you should get a welcome message
-3. Send any text -> the bot should echo it back
-
-## Stop the bot
-
-Press `Ctrl + C` in the terminal.
+Stop the bot with `Ctrl + C`.
