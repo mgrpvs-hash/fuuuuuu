@@ -175,7 +175,7 @@ def заблокировать_комнаты_пользователя(user_id: 
 
 
 async def отправить_главное_меню(
-    context: ContextTypes.DEFAULT_TYPE, chat_id: int, text: str = "Главное меню:"
+    context: ContextTypes.DEFAULT_TYPE, chat_id: int, text: str = "🏠 Главное меню:"
 ) -> None:
     """Отправка главного меню."""
     await context.bot.send_message(chat_id=chat_id, text=text, reply_markup=главное_меню())
@@ -235,7 +235,7 @@ async def показать_приглашение(
 
     room = rooms.get(room_id)
     if not room:
-        await message.reply_text("Комната не найдена.", reply_markup=кнопка_назад_в_меню())
+        await message.reply_text("❌ 🏠 Комната не найдена.", reply_markup=кнопка_назад_в_меню())
         return
 
     if комната_заблокирована(room_id):
@@ -247,7 +247,7 @@ async def показать_приглашение(
 
     if not room["is_open"] or room["joined_count"] >= 2:
         await message.reply_text(
-            "Ссылка неактивна (комната заполнена).",
+            "❌ 🔗 Ссылка неактивна (комната заполнена).",
             reply_markup=кнопка_назад_в_меню(),
         )
         return
@@ -260,14 +260,14 @@ async def показать_приглашение(
 
     if user.id in room["joined_user_ids"]:
         await message.reply_text(
-            "Вы уже присоединились к этой комнате.", reply_markup=кнопка_назад_в_меню()
+            "✅ Вы уже присоединились к этой комнате.", reply_markup=кнопка_назад_в_меню()
         )
         return
 
     text = (
-        f"Вы присоединяетесь к комнате #{room_id}.\n"
-        f"Сумма: {сумма_ton(room['amount'])}.\n"
-        "Отправьте платеж на кошелёк создателя:\n"
+        f"🏠 Вы присоединяетесь к комнате #{room_id}.\n"
+        f"💰 Сумма: {сумма_ton(room['amount'])}.\n"
+        "👛 Отправьте платеж на кошелёк создателя:\n"
         f"{room['creator_wallet']}"
     )
     keyboard = InlineKeyboardMarkup(
@@ -317,7 +317,7 @@ async def handle_text_input(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         user_wallets[user.id] = text
         user_states.pop(user.id, None)
         await message.reply_text(
-            f"Кошелёк подключен:\n{text}",
+            f"✅ 👛 Кошелёк подключен:\n{text}",
             reply_markup=главное_меню(),
         )
         return
@@ -341,8 +341,8 @@ async def handle_text_input(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         )
         await message.reply_text(
             (
-                f"Комната будет создана на сумму {сумма_ton(amount)}.\n"
-                "Оплата на кошелёк:\n"
+                f"🏠 Комната будет создана на сумму {сумма_ton(amount)}.\n"
+                "👛 Оплата на кошелёк:\n"
                 f"{MAIN_WALLET}"
             ),
             reply_markup=keyboard,
@@ -649,7 +649,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         user_states[user.id] = "await_wallet"
         await context.bot.send_message(
             chat_id=chat_id,
-            text="Отправьте адрес вашего кошелька.",
+            text="Отправьте ваш TON адрес",
             reply_markup=кнопка_назад_в_меню(),
         )
         return
@@ -675,7 +675,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         if not room_ids:
             await context.bot.send_message(
                 chat_id=chat_id,
-                text="У вас пока нет комнат.",
+                text="🏠 У вас пока нет комнат. Нажмите 'Создать комнату'",
                 reply_markup=кнопка_назад_в_меню(),
             )
             return
@@ -689,7 +689,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             keyboard_rows.append(
                 [
                     InlineKeyboardButton(
-                        f"Комната #{room_id} | {state} | Сумма: {сумма_ton(room['amount'])}",
+                        f"🏠 Комната #{room_id} | 👥 {state} | 💰 Сумма: {сумма_ton(room['amount'])}",
                         callback_data=f"room_show:{room_id}",
                     )
                 ]
@@ -698,7 +698,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         if not keyboard_rows:
             await context.bot.send_message(
                 chat_id=chat_id,
-                text="У вас пока нет комнат.",
+                text="🏠 У вас пока нет комнат. Нажмите 'Создать комнату'",
                 reply_markup=кнопка_назад_в_меню(),
             )
             return
@@ -706,7 +706,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         keyboard_rows.append([InlineKeyboardButton("Назад в меню", callback_data="menu_main")])
         await context.bot.send_message(
             chat_id=chat_id,
-            text="Ваши комнаты:",
+            text="🏠 Ваши комнаты:",
             reply_markup=InlineKeyboardMarkup(keyboard_rows),
         )
         return
