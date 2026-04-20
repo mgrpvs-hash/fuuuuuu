@@ -1,8 +1,7 @@
-"""Room/payment Telegram bot using python-telegram-bot."""
+"""Телеграм-бот комнат с оплатой на python-telegram-bot."""
 
 import logging
 import os
-from decimal import Decimal, InvalidOperation
 from itertools import count
 from typing import Any
 
@@ -25,7 +24,7 @@ logging.basicConfig(
     level=logging.INFO,
 )
 
-# In-memory storage.
+# Хранилище в памяти.
 user_wallets: dict[int, str] = {}
 user_states: dict[int, str] = {}
 pending_room_amounts: dict[int, str] = {}
@@ -39,99 +38,88 @@ join_request_counter = count(1)
 
 
 def main_menu_markup() -> InlineKeyboardMarkup:
-    """Main menu keyboard."""
+    """Клавиатура главного меню."""
     return InlineKeyboardMarkup(
         [
-            [InlineKeyboardButton("Connect Wallet", callback_data="menu_connect_wallet")],
-            [InlineKeyboardButton("Create Room", callback_data="menu_create_room")],
-            [InlineKeyboardButton("My Rooms", callback_data="menu_my_rooms")],
-            [InlineKeyboardButton("Rules", callback_data="menu_rules")],
+            [InlineKeyboardButton("Подключить кошелёк", callback_data="menu_connect_wallet")],
+            [InlineKeyboardButton("Создать комнату", callback_data="menu_create_room")],
+            [InlineKeyboardButton("Мои комнаты", callback_data="menu_my_rooms")],
+            [InlineKeyboardButton("Правила", callback_data="menu_rules")],
         ]
     )
 
 
 def back_to_menu_markup() -> InlineKeyboardMarkup:
-    """Single button keyboard to return to main menu."""
+    """Кнопка возврата в меню."""
     return InlineKeyboardMarkup(
-        [[InlineKeyboardButton("Back to Menu", callback_data="menu_main")]]
+        [[InlineKeyboardButton("Назад в меню", callback_data="menu_main")]]
     )
 
 
-def format_user_display(user_id: int, username: str | None) -> str:
-    """Return readable user identifier."""
+def user_display_name(user_id: int, username: str | None) -> str:
+    """Отображаемое имя пользователя."""
     if username:
-        return f"@{username} / {user_id}"
+        return f"@{username}"
     return str(user_id)
 
 
-def participant_counter(room: dict[str, Any]) -> str:
-    """Return room participant count in requested format."""
-    joined_count = int(room.get("joined_count", 0))
-    if joined_count < 0:
-        joined_count = 0
-    if joined_count > 1:
-        joined_count = 1
-    return f"{joined_count} of 2"
-
-
-def parse_amount_input(raw_amount: str) -> str:
-    """Parse amount preserving integer trailing zeros like 100 -> '100'."""
-    amount_value = Decimal(raw_amount)
-    if amount_value <= 0:
-        raise InvalidOperation
-
-    if amount_value == amount_value.to_integral_value():
-        return str(amount_value.quantize(Decimal("1")))
-
-    amount = format(amount_value.normalize(), "f").rstrip("0").rstrip(".")
-    if not amount:
-        raise InvalidOperation
-    return amount
-
-
-def format_amount_ton(amount: str) -> str:
-    """Format amount with TON suffix for all UI messages."""
+def amount_ton(amount: str) -> str:
+    """Сумма в формате TON."""
     return f"{amount} TON"
+
+
+def participant_counter(room: dict[str, Any]) -> str:
+    """Счётчик присоединившихся участников (создатель не считается)."""
+    return f"{room['joined_count']} из 2"
+
+
+def parse_amount_digits(text: str) -> str | None:
+    """Парсинг суммы: только положительные целые цифры."""
+    raw = text.strip()
+    if not raw.isdigit():
+        return None
+    value = int(raw)
+    if value <= 0:
+        return None
+    return str(value)
 
 
 def create_room_record(
     creator_id: int, creator_username: str | None, amount: str, creator_wallet: str
 ) -> int:
-    """Create a room and register it under creator's My Rooms."""
+    """Создать комнату и привязать к создателю."""
     room_id = next(room_id_counter)
-    creator_name = f"@{creator_username}" if creator_username else str(creator_id)
     rooms[room_id] = {
         "id": room_id,
         "amount": amount,
         "creator_id": creator_id,
-        "creator_name": creator_name,
+        "creator_name": user_display_name(creator_id, creator_username),
         "creator_wallet": creator_wallet,
-        "joined_count": 0,
-        "is_open": True,
+        "joined_count": 0,  # создатель не входит в счётчик
         "joined_user_id": None,
+        "is_open": True,
     }
     created_rooms.setdefault(creator_id, set()).add(room_id)
     return room_id
 
 
 async def send_main_menu(
-    context: ContextTypes.DEFAULT_TYPE, chat_id: int, text: str = "Main menu:"
+    context: ContextTypes.DEFAULT_TYPE, chat_id: int, text: str = "Главное меню:"
 ) -> None:
-    """Send main menu message."""
+    """Отправить главное меню."""
     await context.bot.send_message(chat_id=chat_id, text=text, reply_markup=main_menu_markup())
 
 
 async def get_bot_username(context: ContextTypes.DEFAULT_TYPE) -> str:
-    """Fetch bot username for invite links."""
-    username = context.bot.username
-    if username:
-        return username
+    """Получить username бота для ссылок."""
+    if context.bot.username:
+        return context.bot.username
     me = await context.bot.get_me()
     return me.username or "your_bot"
 
 
-async def invite_link(context: ContextTypes.DEFAULT_TYPE, room_id: int) -> str:
-    """Build room invite link."""
+async def build_invite_link(context: ContextTypes.DEFAULT_TYPE, room_id: int) -> str:
+    """Собрать ссылку приглашения."""
     bot_username = await get_bot_username(context)
     return f"t.me/{bot_username}?start=room_{room_id}"
 
@@ -139,7 +127,7 @@ async def invite_link(context: ContextTypes.DEFAULT_TYPE, room_id: int) -> str:
 async def show_join_invite(
     update: Update, context: ContextTypes.DEFAULT_TYPE, room_id: int
 ) -> None:
-    """Show invite information when user opens /start room_<id>."""
+    """Показать экран присоединения по ссылке."""
     user = update.effective_user
     message = update.effective_message
     if not user or not message:
@@ -147,52 +135,49 @@ async def show_join_invite(
 
     room = rooms.get(room_id)
     if not room:
-        await message.reply_text("Room not found.", reply_markup=back_to_menu_markup())
+        await message.reply_text("Комната не найдена.", reply_markup=back_to_menu_markup())
         return
 
     if not room["is_open"]:
         await message.reply_text(
-            "This room is already full. Link is inactive.",
+            "Ссылка неактивна (комната заполнена)",
             reply_markup=back_to_menu_markup(),
         )
         return
 
     if user.id == room["creator_id"]:
         await message.reply_text(
-            "You are the creator of this room.", reply_markup=back_to_menu_markup()
+            "Вы создатель этой комнаты.",
+            reply_markup=back_to_menu_markup(),
         )
         return
 
     if user.id == room["joined_user_id"]:
         await message.reply_text(
-            "You already joined this room.", reply_markup=back_to_menu_markup()
+            "Вы уже присоединились к этой комнате.",
+            reply_markup=back_to_menu_markup(),
         )
         return
 
     text = (
-        f"You joined a room created by {room['creator_name']}\n"
-        f"Amount: {format_amount_ton(room['amount'])}\n\n"
-        "To join this room, send payment to this wallet:\n"
+        f"Вы присоединяетесь к комнате #{room_id}.\n"
+        f"Сумма: {amount_ton(room['amount'])}.\n"
+        "Отправьте платеж на кошелёк создателя:\n"
         f"{room['creator_wallet']}"
     )
     keyboard = InlineKeyboardMarkup(
         [
-            [
-                InlineKeyboardButton(
-                    "Confirm Payment", callback_data=f"join_confirm_payment:{room_id}"
-                )
-            ],
-            [InlineKeyboardButton("Cancel", callback_data="menu_main")],
+            [InlineKeyboardButton("Подтвердить оплату", callback_data=f"join_confirm:{room_id}")],
+            [InlineKeyboardButton("Отмена", callback_data="menu_main")],
         ]
     )
     await message.reply_text(text, reply_markup=keyboard)
 
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Handle /start and optional invite payload."""
+    """Обработчик /start и room-параметров."""
     message = update.effective_message
-    user = update.effective_user
-    if not message or not user:
+    if not message:
         return
 
     if context.args and context.args[0].startswith("room_"):
@@ -201,11 +186,11 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             await show_join_invite(update, context, int(room_token))
             return
 
-    await message.reply_text("Main menu:", reply_markup=main_menu_markup())
+    await message.reply_text("Главное меню:", reply_markup=main_menu_markup())
 
 
-async def handle_text_input(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Handle text input for wallet and amount collection."""
+async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Обработка текстовых шагов (кошелёк/сумма)."""
     message = update.effective_message
     user = update.effective_user
     if not message or not user:
@@ -218,17 +203,16 @@ async def handle_text_input(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         user_wallets[user.id] = text
         user_states.pop(user.id, None)
         await message.reply_text(
-            f"Wallet connected:\n{text}",
+            f"Кошелёк сохранён:\n{text}",
             reply_markup=main_menu_markup(),
         )
         return
 
-    if state == "await_create_amount":
-        try:
-            amount = parse_amount_input(text)
-        except InvalidOperation:
+    if state == "await_amount":
+        amount = parse_amount_digits(text)
+        if not amount:
             await message.reply_text(
-                "Please enter a valid positive amount.",
+                "Введите стоимость комнаты в TON (только цифры):",
                 reply_markup=back_to_menu_markup(),
             )
             return
@@ -237,25 +221,25 @@ async def handle_text_input(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         user_states.pop(user.id, None)
         keyboard = InlineKeyboardMarkup(
             [
-                [InlineKeyboardButton("Confirm Payment", callback_data="create_confirm_payment")],
-                [InlineKeyboardButton("Back to Menu", callback_data="menu_main")],
+                [InlineKeyboardButton("Подтвердить оплату", callback_data="create_confirm")],
+                [InlineKeyboardButton("Назад в меню", callback_data="menu_main")],
             ]
         )
         await message.reply_text(
             (
-                f"Room will be created for {format_amount_ton(amount)}.\n"
-                "To create the room, send payment to:\n"
+                f"Комната будет создана на сумму {amount_ton(amount)}.\n"
+                "Оплата на кошелёк:\n"
                 f"{MAIN_WALLET}"
             ),
             reply_markup=keyboard,
         )
         return
 
-    await message.reply_text("Use the menu below.", reply_markup=main_menu_markup())
+    await message.reply_text("Выберите действие в меню ниже.", reply_markup=main_menu_markup())
 
 
 async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Handle all inline keyboard callbacks."""
+    """Обработка всех callback-кнопок."""
     query = update.callback_query
     user = update.effective_user
     if not query or not user:
@@ -274,7 +258,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         user_states[user.id] = "await_wallet"
         await context.bot.send_message(
             chat_id=chat_id,
-            text="Send your wallet address.",
+            text="Отправьте адрес вашего кошелька:",
             reply_markup=back_to_menu_markup(),
         )
         return
@@ -283,14 +267,14 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         if user.id not in user_wallets:
             await context.bot.send_message(
                 chat_id=chat_id,
-                text="Connect wallet first from the main menu.",
+                text="Сначала подключите кошелёк в главном меню.",
                 reply_markup=main_menu_markup(),
             )
             return
-        user_states[user.id] = "await_create_amount"
+        user_states[user.id] = "await_amount"
         await context.bot.send_message(
             chat_id=chat_id,
-            text="Enter amount for the room.",
+            text="Введите стоимость комнаты в TON (только цифры):",
             reply_markup=back_to_menu_markup(),
         )
         return
@@ -300,7 +284,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         if not room_ids:
             await context.bot.send_message(
                 chat_id=chat_id,
-                text="You have no rooms yet.",
+                text="У вас пока нет созданных комнат.",
                 reply_markup=back_to_menu_markup(),
             )
             return
@@ -310,11 +294,13 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             room = rooms.get(room_id)
             if not room:
                 continue
-            state = participant_counter(room)
             keyboard_rows.append(
                 [
                     InlineKeyboardButton(
-                        f"Room #{room_id} | {state} | Amount {format_amount_ton(room['amount'])}",
+                        (
+                            f"Комната #{room_id} | {participant_counter(room)} | "
+                            f"Сумма: {amount_ton(room['amount'])}"
+                        ),
                         callback_data=f"room_show:{room_id}",
                     )
                 ]
@@ -323,15 +309,15 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         if not keyboard_rows:
             await context.bot.send_message(
                 chat_id=chat_id,
-                text="You have no rooms yet.",
+                text="У вас пока нет созданных комнат.",
                 reply_markup=back_to_menu_markup(),
             )
             return
 
-        keyboard_rows.append([InlineKeyboardButton("Back to Menu", callback_data="menu_main")])
+        keyboard_rows.append([InlineKeyboardButton("Назад в меню", callback_data="menu_main")])
         await context.bot.send_message(
             chat_id=chat_id,
-            text="Your rooms:",
+            text="Мои комнаты:",
             reply_markup=InlineKeyboardMarkup(keyboard_rows),
         )
         return
@@ -339,22 +325,22 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     if data == "menu_rules":
         await context.bot.send_message(
             chat_id=chat_id,
-            text="Rules are empty.",
+            text="Правила пока пустые.",
             reply_markup=back_to_menu_markup(),
         )
         return
 
-    if data == "create_confirm_payment":
+    if data == "create_confirm":
         amount = pending_room_amounts.get(user.id)
         if not amount:
             await context.bot.send_message(
                 chat_id=chat_id,
-                text="No pending room creation request. Choose Create Room first.",
+                text="Нет ожидающего запроса. Сначала создайте комнату.",
                 reply_markup=main_menu_markup(),
             )
             return
 
-        wallet = user_wallets.get(user.id, "Not set")
+        wallet = user_wallets.get(user.id, "Не указан")
         request_id = next(create_request_counter)
         create_requests[request_id] = {
             "user_id": user.id,
@@ -366,18 +352,18 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         pending_room_amounts.pop(user.id, None)
 
         admin_text = (
-            f"User [{format_user_display(user.id, user.username)}] wants to create room\n"
-            f"Amount: {format_amount_ton(amount)}\n"
-            f"User wallet: {wallet}"
+            f"Пользователь {user_display_name(user.id, user.username)} хочет создать комнату\n"
+            f"Сумма: {amount_ton(amount)}\n"
+            f"Кошелёк пользователя: {wallet}"
         )
         admin_keyboard = InlineKeyboardMarkup(
             [
                 [
                     InlineKeyboardButton(
-                        "Confirm", callback_data=f"admin_create_confirm:{request_id}"
+                        "Подтвердить", callback_data=f"admin_create_confirm:{request_id}"
                     ),
                     InlineKeyboardButton(
-                        "Reject", callback_data=f"admin_create_reject:{request_id}"
+                        "Отклонить", callback_data=f"admin_create_reject:{request_id}"
                     ),
                 ]
             ]
@@ -389,14 +375,14 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         )
         await context.bot.send_message(
             chat_id=chat_id,
-            text="Payment confirmation request sent to admin.",
+            text="Запрос отправлен администратору.",
             reply_markup=back_to_menu_markup(),
         )
         return
 
     if data.startswith("admin_create_confirm:") or data.startswith("admin_create_reject:"):
         if user.id != ADMIN_ID:
-            await query.answer("Only admin can do this.", show_alert=True)
+            await query.answer("Только админ может это сделать.", show_alert=True)
             return
 
         action, request_id_str = data.split(":", 1)
@@ -405,7 +391,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         request_id = int(request_id_str)
         request_data = create_requests.get(request_id)
         if not request_data or request_data["status"] != "pending":
-            await context.bot.send_message(chat_id=chat_id, text="Request already handled.")
+            await context.bot.send_message(chat_id=chat_id, text="Запрос уже обработан.")
             return
 
         creator_id = request_data["user_id"]
@@ -419,25 +405,28 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
                 creator_wallet=request_data["wallet"],
             )
             request_data["status"] = "confirmed"
+            link = await build_invite_link(context, room_id)
 
             await context.bot.send_message(
                 chat_id=creator_id,
-                text="Room created successfully",
+                text=(
+                    f"Комната создана успешно.\n"
+                    f"Комната #{room_id} | {participant_counter(rooms[room_id])} | "
+                    f"Сумма: {amount_ton(rooms[room_id]['amount'])}\n"
+                    f"Ссылка: {link}"
+                ),
                 reply_markup=main_menu_markup(),
             )
-            await context.bot.send_message(
-                chat_id=chat_id,
-                text=f"Room #{room_id} created with {participant_counter(rooms[room_id])}.",
-            )
+            await context.bot.send_message(chat_id=chat_id, text=f"Комната #{room_id} создана.")
             return
 
         request_data["status"] = "rejected"
         await context.bot.send_message(
             chat_id=creator_id,
-            text="Your room creation request was rejected.",
+            text="Запрос на создание комнаты отклонён.",
             reply_markup=main_menu_markup(),
         )
-        await context.bot.send_message(chat_id=chat_id, text="Request rejected.")
+        await context.bot.send_message(chat_id=chat_id, text="Запрос отклонён.")
         return
 
     if data.startswith("room_show:"):
@@ -449,63 +438,65 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         if not room or room_id not in created_rooms.get(user.id, set()):
             await context.bot.send_message(
                 chat_id=chat_id,
-                text="Room not found.",
+                text="Комната не найдена.",
                 reply_markup=back_to_menu_markup(),
             )
             return
 
-        counter = participant_counter(room)
         if room["is_open"]:
-            current_invite_link = await invite_link(context, room_id)
+            link_text = await build_invite_link(context, room_id)
         else:
-            current_invite_link = "Link inactive (room is full)"
+            link_text = "Ссылка неактивна (комната заполнена)"
 
         text = (
-            f"Room #{room_id}\n"
-            f"Participants: {counter}\n"
-            f"Amount: {format_amount_ton(room['amount'])}\n"
-            f"User wallet: {room['creator_wallet']}\n"
-            f"Invite link: {current_invite_link}"
+            f"Комната #{room_id}\n"
+            f"Участники: {participant_counter(room)}\n"
+            f"Сумма: {amount_ton(room['amount'])}\n"
+            f"Кошелёк создателя: {room['creator_wallet']}\n"
+            f"Ссылка: {link_text}"
         )
         keyboard = InlineKeyboardMarkup(
             [
-                [InlineKeyboardButton("Back to My Rooms", callback_data="menu_my_rooms")],
-                [InlineKeyboardButton("Back to Menu", callback_data="menu_main")],
+                [InlineKeyboardButton("Назад к комнатам", callback_data="menu_my_rooms")],
+                [InlineKeyboardButton("Назад в меню", callback_data="menu_main")],
             ]
         )
         await context.bot.send_message(chat_id=chat_id, text=text, reply_markup=keyboard)
         return
 
-    if data.startswith("join_confirm_payment:"):
+    if data.startswith("join_confirm:"):
         room_id_str = data.split(":", 1)[1]
         if not room_id_str.isdigit():
             return
         room_id = int(room_id_str)
         room = rooms.get(room_id)
         if not room:
-            await context.bot.send_message(chat_id=chat_id, text="Room not found.")
+            await context.bot.send_message(chat_id=chat_id, text="Комната не найдена.")
             return
 
         if not room["is_open"] or room["joined_count"] >= 1:
             await context.bot.send_message(
                 chat_id=chat_id,
-                text="This room is already full. Link is inactive.",
+                text="Ссылка неактивна (комната заполнена)",
                 reply_markup=back_to_menu_markup(),
             )
             return
 
         if user.id == room["creator_id"]:
-            await context.bot.send_message(chat_id=chat_id, text="You cannot join your own room.")
+            await context.bot.send_message(chat_id=chat_id, text="Вы создатель этой комнаты.")
             return
 
         if user.id == room["joined_user_id"]:
-            await context.bot.send_message(chat_id=chat_id, text="You already joined this room.")
+            await context.bot.send_message(
+                chat_id=chat_id,
+                text="Вы уже присоединились к этой комнате.",
+            )
             return
 
         if user.id not in user_wallets:
             await context.bot.send_message(
                 chat_id=chat_id,
-                text="Connect your wallet first from the main menu, then confirm payment again.",
+                text="Сначала подключите кошелёк в главном меню, затем повторите подтверждение.",
                 reply_markup=main_menu_markup(),
             )
             return
@@ -519,7 +510,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         if already_pending:
             await context.bot.send_message(
                 chat_id=chat_id,
-                text="Your join request is already pending creator confirmation.",
+                text="Ваш запрос уже отправлен администратору.",
                 reply_markup=back_to_menu_markup(),
             )
             return
@@ -532,69 +523,70 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             "status": "pending",
         }
 
-        creator_text = (
-            f"User [{format_user_display(user.id, user.username)}] wants to join your room\n"
-            f"Amount: {format_amount_ton(room['amount'])}"
+        admin_text = (
+            f"Пользователь {user_display_name(user.id, user.username)} хочет присоединиться\n"
+            f"Комната #{room_id}\n"
+            f"Сумма: {amount_ton(room['amount'])}\n"
+            f"Кошелёк создателя: {room['creator_wallet']}\n"
+            f"Кошелёк присоединяющегося: {user_wallets.get(user.id)}"
         )
-        creator_keyboard = InlineKeyboardMarkup(
+        admin_keyboard = InlineKeyboardMarkup(
             [
                 [
                     InlineKeyboardButton(
-                        "Confirm", callback_data=f"creator_join_confirm:{request_id}"
+                        "Подтвердить", callback_data=f"admin_join_confirm:{request_id}"
                     ),
                     InlineKeyboardButton(
-                        "Reject", callback_data=f"creator_join_reject:{request_id}"
+                        "Отклонить", callback_data=f"admin_join_reject:{request_id}"
                     ),
                 ]
             ]
         )
         await context.bot.send_message(
-            chat_id=room["creator_id"],
-            text=creator_text,
-            reply_markup=creator_keyboard,
+            chat_id=ADMIN_ID,
+            text=admin_text,
+            reply_markup=admin_keyboard,
         )
         await context.bot.send_message(
             chat_id=chat_id,
-            text="Join request sent to room creator.",
+            text="Запрос на присоединение отправлен администратору.",
             reply_markup=back_to_menu_markup(),
         )
         return
 
-    if data.startswith("creator_join_confirm:") or data.startswith("creator_join_reject:"):
+    if data.startswith("admin_join_confirm:") or data.startswith("admin_join_reject:"):
+        if user.id != ADMIN_ID:
+            await query.answer("Только админ может это сделать.", show_alert=True)
+            return
+
         action, request_id_str = data.split(":", 1)
         if not request_id_str.isdigit():
             return
         request_id = int(request_id_str)
         request_data = join_requests.get(request_id)
         if not request_data or request_data["status"] != "pending":
-            await context.bot.send_message(chat_id=chat_id, text="Request already handled.")
+            await context.bot.send_message(chat_id=chat_id, text="Запрос уже обработан.")
             return
 
         room = rooms.get(request_data["room_id"])
         if not room:
             request_data["status"] = "rejected"
-            await context.bot.send_message(chat_id=chat_id, text="Room does not exist anymore.")
-            return
-
-        if user.id != room["creator_id"]:
-            await query.answer("Only room creator can do this.", show_alert=True)
+            await context.bot.send_message(chat_id=chat_id, text="Комната больше не существует.")
             return
 
         joiner_id = request_data["joiner_id"]
         joiner_username = request_data["joiner_username"]
+        joiner_name = user_display_name(joiner_id, joiner_username)
 
-        if action == "creator_join_confirm":
+        if action == "admin_join_confirm":
             if not room["is_open"] or room["joined_count"] >= 1:
                 request_data["status"] = "rejected"
                 await context.bot.send_message(
-                    chat_id=chat_id,
-                    text="Room is already full. This request was not accepted.",
-                )
-                await context.bot.send_message(
                     chat_id=joiner_id,
-                    text="Room is already full. Your request was not accepted.",
+                    text="Ссылка неактивна (комната заполнена)",
                     reply_markup=main_menu_markup(),
                 )
+                await context.bot.send_message(chat_id=chat_id, text="Комната уже заполнена.")
                 return
 
             request_data["status"] = "confirmed"
@@ -602,6 +594,17 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             room["joined_user_id"] = joiner_id
             room["is_open"] = False
 
+            # Сообщение создателю исходной комнаты.
+            await context.bot.send_message(
+                chat_id=room["creator_id"],
+                text=(
+                    f"Пользователь {joiner_name} добавлен. "
+                    f"Комната #{room['id']} теперь {participant_counter(room)}. "
+                    "Ссылка неактивна."
+                ),
+            )
+
+            # Автосоздание комнаты для присоединившегося пользователя (цепочка).
             joiner_wallet = user_wallets.get(joiner_id)
             new_room_id = None
             new_room_link = None
@@ -612,18 +615,20 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
                     amount=room["amount"],
                     creator_wallet=joiner_wallet,
                 )
-                new_room_link = await invite_link(context, new_room_id)
+                new_room_link = await build_invite_link(context, new_room_id)
 
-            joiner_text = "Payment confirmed. You joined the room"
+            joiner_text = "Оплата подтверждена. Вы присоединились к комнате."
             if new_room_id and new_room_link:
                 joiner_text += (
-                    f"\n\nYour own room was created automatically.\n"
-                    f"Room #{new_room_id} ({participant_counter(rooms[new_room_id])})\n"
-                    f"Invite link: {new_room_link}"
+                    f"\n\nДля вас автоматически создана собственная комната:\n"
+                    f"Комната #{new_room_id} | {participant_counter(rooms[new_room_id])} | "
+                    f"Сумма: {amount_ton(rooms[new_room_id]['amount'])}\n"
+                    f"Кошелёк: {rooms[new_room_id]['creator_wallet']}\n"
+                    f"Ссылка: {new_room_link}"
                 )
             else:
                 joiner_text += (
-                    "\n\nCould not auto-create your own room because your wallet is missing."
+                    "\n\nНе удалось создать вашу комнату автоматически: кошелёк не найден."
                 )
 
             await context.bot.send_message(
@@ -634,8 +639,9 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             await context.bot.send_message(
                 chat_id=chat_id,
                 text=(
-                    f"User added. Room #{room['id']} is now {participant_counter(room)}.\n"
-                    "Invite link is now inactive."
+                    f"Пользователь {joiner_name} добавлен. "
+                    f"Комната #{room['id']} теперь {participant_counter(room)}. "
+                    "Ссылка неактивна."
                 ),
             )
             return
@@ -643,27 +649,27 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         request_data["status"] = "rejected"
         await context.bot.send_message(
             chat_id=joiner_id,
-            text="Your join request was rejected.",
+            text="Запрос на присоединение отклонён администратором.",
             reply_markup=main_menu_markup(),
         )
-        await context.bot.send_message(chat_id=chat_id, text="Join request rejected.")
+        await context.bot.send_message(chat_id=chat_id, text="Запрос отклонён.")
         return
 
 
 def main() -> None:
-    """Load environment variables and run the bot."""
+    """Запуск бота."""
     load_dotenv()
     token = os.getenv("BOT_TOKEN")
 
     if not token:
-        raise ValueError("BOT_TOKEN not found. Add it to your .env file before running the bot.")
+        raise ValueError("BOT_TOKEN не найден. Добавьте его в .env.")
 
     application = Application.builder().token(token).build()
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CallbackQueryHandler(handle_callback))
-    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text_input))
+    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
 
-    print("Bot is running. Press Ctrl+C to stop.")
+    print("Бот запущен. Для остановки нажмите Ctrl+C.")
     application.run_polling()
 
 
