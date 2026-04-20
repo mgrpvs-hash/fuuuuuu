@@ -96,7 +96,7 @@ def главное_меню() -> InlineKeyboardMarkup:
 def кнопка_назад_в_меню() -> InlineKeyboardMarkup:
     """Клавиатура с кнопкой возврата в меню."""
     return InlineKeyboardMarkup(
-        [[InlineKeyboardButton("Назад в меню", callback_data="menu_main")]]
+        [[InlineKeyboardButton("🔙 Назад", callback_data="menu_main")]]
     )
 
 
