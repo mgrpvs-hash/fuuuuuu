@@ -15,6 +15,15 @@ This project is a simple, beginner-friendly Telegram bot built with
 - `requirements.txt` - Python dependencies
 - `.env.example` - example environment variables file
 
+## Quick run (no virtual environment)
+
+```bash
+python3 -m pip install --user -r requirements.txt
+cp .env.example .env
+# edit .env and set BOT_TOKEN
+python3 bot.py
+```
+
 ## Step-by-step setup and run
 
 ### 1) Create a Telegram bot and get a token
@@ -34,35 +43,16 @@ python3 --version
 If Python is missing, install it from your package manager or from
 https://www.python.org/downloads/
 
-### 3) Create a virtual environment
-
-From this project folder:
+### 3) Install dependencies (no venv)
 
 ```bash
-python3 -m venv .venv
+python3 -m pip install --user -r requirements.txt
 ```
 
-Activate it:
+If your environment does not allow global installs, `--user` installs to your home
+directory instead.
 
-- Linux/macOS:
-
-  ```bash
-  source .venv/bin/activate
-  ```
-
-- Windows (PowerShell):
-
-  ```powershell
-  .venv\Scripts\Activate.ps1
-  ```
-
-### 4) Install dependencies
-
-```bash
-pip install -r requirements.txt
-```
-
-### 5) Create your `.env` file
+### 4) Create your `.env` file
 
 Copy the example file:
 
@@ -76,7 +66,7 @@ Open `.env` and set your token:
 BOT_TOKEN=your_real_bot_token_here
 ```
 
-### 6) Run the bot
+### 5) Run the bot
 
 ```bash
 python3 bot.py
@@ -88,7 +78,7 @@ You should see:
 Bot is running. Press Ctrl+C to stop.
 ```
 
-### 7) Test in Telegram
+### 6) Test in Telegram
 
 1. Open your bot chat
 2. Send `/start` -> you should get a welcome message
