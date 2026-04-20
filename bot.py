@@ -66,7 +66,32 @@ def format_user_display(user_id: int, username: str | None) -> str:
 
 def participant_counter(room: dict[str, Any]) -> str:
     """Return room participant count in requested format."""
-    return f"{room['joined_count']} of 2"
+    joined_count = int(room.get("joined_count", 0))
+    if joined_count < 0:
+        joined_count = 0
+    if joined_count > 1:
+        joined_count = 1
+    return f"{joined_count} of 2"
+
+
+def parse_amount_input(raw_amount: str) -> str:
+    """Parse amount preserving integer trailing zeros like 100 -> '100'."""
+    amount_value = Decimal(raw_amount)
+    if amount_value <= 0:
+        raise InvalidOperation
+
+    if amount_value == amount_value.to_integral_value():
+        return str(amount_value.quantize(Decimal("1")))
+
+    amount = format(amount_value.normalize(), "f").rstrip("0").rstrip(".")
+    if not amount:
+        raise InvalidOperation
+    return amount
+
+
+def format_amount_ton(amount: str) -> str:
+    """Format amount with TON suffix for all UI messages."""
+    return f"{amount} TON"
 
 
 def create_room_record(
@@ -146,7 +171,7 @@ async def show_join_invite(
 
     text = (
         f"You joined a room created by {room['creator_name']}\n"
-        f"Amount: {room['amount']}\n\n"
+        f"Amount: {format_amount_ton(room['amount'])}\n\n"
         "To join this room, send payment to this wallet:\n"
         f"{room['creator_wallet']}"
     )
@@ -200,9 +225,7 @@ async def handle_text_input(update: Update, context: ContextTypes.DEFAULT_TYPE) 
 
     if state == "await_create_amount":
         try:
-            amount_value = Decimal(text)
-            if amount_value <= 0:
-                raise InvalidOperation
+            amount = parse_amount_input(text)
         except InvalidOperation:
             await message.reply_text(
                 "Please enter a valid positive amount.",
@@ -210,9 +233,6 @@ async def handle_text_input(update: Update, context: ContextTypes.DEFAULT_TYPE) 
             )
             return
 
-        amount = format(amount_value, "f").rstrip("0").rstrip(".")
-        if not amount:
-            amount = "0"
         pending_room_amounts[user.id] = amount
         user_states.pop(user.id, None)
         keyboard = InlineKeyboardMarkup(
@@ -223,7 +243,7 @@ async def handle_text_input(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         )
         await message.reply_text(
             (
-                f"Room will be created for {amount}.\n"
+                f"Room will be created for {format_amount_ton(amount)}.\n"
                 "To create the room, send payment to:\n"
                 f"{MAIN_WALLET}"
             ),
@@ -294,7 +314,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             keyboard_rows.append(
                 [
                     InlineKeyboardButton(
-                        f"Room #{room_id} | {state} | Amount {room['amount']}",
+                        f"Room #{room_id} | {state} | Amount {format_amount_ton(room['amount'])}",
                         callback_data=f"room_show:{room_id}",
                     )
                 ]
@@ -347,7 +367,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 
         admin_text = (
             f"User [{format_user_display(user.id, user.username)}] wants to create room\n"
-            f"Amount: {amount}\n"
+            f"Amount: {format_amount_ton(amount)}\n"
             f"User wallet: {wallet}"
         )
         admin_keyboard = InlineKeyboardMarkup(
@@ -443,7 +463,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         text = (
             f"Room #{room_id}\n"
             f"Participants: {counter}\n"
-            f"Amount: {room['amount']}\n"
+            f"Amount: {format_amount_ton(room['amount'])}\n"
             f"User wallet: {room['creator_wallet']}\n"
             f"Invite link: {current_invite_link}"
         )
@@ -514,7 +534,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 
         creator_text = (
             f"User [{format_user_display(user.id, user.username)}] wants to join your room\n"
-            f"Amount: {room['amount']}"
+            f"Amount: {format_amount_ton(room['amount'])}"
         )
         creator_keyboard = InlineKeyboardMarkup(
             [
