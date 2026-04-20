@@ -2,7 +2,6 @@
 
 import logging
 import os
-from collections import defaultdict
 from decimal import Decimal, InvalidOperation
 from itertools import count
 from typing import Any
@@ -31,7 +30,7 @@ user_wallets: dict[int, str] = {}
 user_states: dict[int, str] = {}
 pending_room_amounts: dict[int, str] = {}
 rooms: dict[int, dict[str, Any]] = {}
-user_rooms: dict[int, set[int]] = defaultdict(set)
+created_rooms: dict[int, set[int]] = {}
 create_requests: dict[int, dict[str, Any]] = {}
 join_requests: dict[int, dict[str, Any]] = {}
 room_id_counter = count(1)
@@ -65,6 +64,31 @@ def format_user_display(user_id: int, username: str | None) -> str:
     return str(user_id)
 
 
+def participant_counter(room: dict[str, Any]) -> str:
+    """Return room participant count in requested format."""
+    return f"{room['joined_count']} of 2"
+
+
+def create_room_record(
+    creator_id: int, creator_username: str | None, amount: str, creator_wallet: str
+) -> int:
+    """Create a room and register it under creator's My Rooms."""
+    room_id = next(room_id_counter)
+    creator_name = f"@{creator_username}" if creator_username else str(creator_id)
+    rooms[room_id] = {
+        "id": room_id,
+        "amount": amount,
+        "creator_id": creator_id,
+        "creator_name": creator_name,
+        "creator_wallet": creator_wallet,
+        "joined_count": 0,
+        "is_open": True,
+        "joined_user_id": None,
+    }
+    created_rooms.setdefault(creator_id, set()).add(room_id)
+    return room_id
+
+
 async def send_main_menu(
     context: ContextTypes.DEFAULT_TYPE, chat_id: int, text: str = "Main menu:"
 ) -> None:
@@ -81,6 +105,12 @@ async def get_bot_username(context: ContextTypes.DEFAULT_TYPE) -> str:
     return me.username or "your_bot"
 
 
+async def invite_link(context: ContextTypes.DEFAULT_TYPE, room_id: int) -> str:
+    """Build room invite link."""
+    bot_username = await get_bot_username(context)
+    return f"t.me/{bot_username}?start=room_{room_id}"
+
+
 async def show_join_invite(
     update: Update, context: ContextTypes.DEFAULT_TYPE, room_id: int
 ) -> None:
@@ -95,15 +125,22 @@ async def show_join_invite(
         await message.reply_text("Room not found.", reply_markup=back_to_menu_markup())
         return
 
+    if not room["is_open"]:
+        await message.reply_text(
+            "This room is already full. Link is inactive.",
+            reply_markup=back_to_menu_markup(),
+        )
+        return
+
     if user.id == room["creator_id"]:
         await message.reply_text(
             "You are the creator of this room.", reply_markup=back_to_menu_markup()
         )
         return
 
-    if user.id in room["members"]:
+    if user.id == room["joined_user_id"]:
         await message.reply_text(
-            "You are already in this room.", reply_markup=back_to_menu_markup()
+            "You already joined this room.", reply_markup=back_to_menu_markup()
         )
         return
 
@@ -239,7 +276,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         return
 
     if data == "menu_my_rooms":
-        room_ids = sorted(user_rooms.get(user.id, set()))
+        room_ids = sorted(created_rooms.get(user.id, set()))
         if not room_ids:
             await context.bot.send_message(
                 chat_id=chat_id,
@@ -248,16 +285,29 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             )
             return
 
-        keyboard_rows = [
-            [
-                InlineKeyboardButton(
-                    f"Room #{room_id} | Amount {rooms[room_id]['amount']}",
-                    callback_data=f"room_show:{room_id}",
-                )
-            ]
-            for room_id in room_ids
-            if room_id in rooms
-        ]
+        keyboard_rows = []
+        for room_id in room_ids:
+            room = rooms.get(room_id)
+            if not room:
+                continue
+            state = participant_counter(room)
+            keyboard_rows.append(
+                [
+                    InlineKeyboardButton(
+                        f"Room #{room_id} | {state} | Amount {room['amount']}",
+                        callback_data=f"room_show:{room_id}",
+                    )
+                ]
+            )
+
+        if not keyboard_rows:
+            await context.bot.send_message(
+                chat_id=chat_id,
+                text="You have no rooms yet.",
+                reply_markup=back_to_menu_markup(),
+            )
+            return
+
         keyboard_rows.append([InlineKeyboardButton("Back to Menu", callback_data="menu_main")])
         await context.bot.send_message(
             chat_id=chat_id,
@@ -342,19 +392,12 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         creator_username = request_data["username"]
 
         if action == "admin_create_confirm":
-            room_id = next(room_id_counter)
-            creator_name = (
-                f"@{creator_username}" if creator_username else str(request_data["user_id"])
+            room_id = create_room_record(
+                creator_id=creator_id,
+                creator_username=creator_username,
+                amount=request_data["amount"],
+                creator_wallet=request_data["wallet"],
             )
-            rooms[room_id] = {
-                "id": room_id,
-                "amount": request_data["amount"],
-                "creator_id": creator_id,
-                "creator_name": creator_name,
-                "creator_wallet": request_data["wallet"],
-                "members": {creator_id},
-            }
-            user_rooms[creator_id].add(room_id)
             request_data["status"] = "confirmed"
 
             await context.bot.send_message(
@@ -364,7 +407,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             )
             await context.bot.send_message(
                 chat_id=chat_id,
-                text=f"Room #{room_id} created.",
+                text=f"Room #{room_id} created with {participant_counter(rooms[room_id])}.",
             )
             return
 
@@ -383,7 +426,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             return
         room_id = int(room_id_str)
         room = rooms.get(room_id)
-        if not room or room_id not in user_rooms.get(user.id, set()):
+        if not room or room_id not in created_rooms.get(user.id, set()):
             await context.bot.send_message(
                 chat_id=chat_id,
                 text="Room not found.",
@@ -391,13 +434,18 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             )
             return
 
-        bot_username = await get_bot_username(context)
-        invite_link = f"t.me/{bot_username}?start=room_{room_id}"
+        counter = participant_counter(room)
+        if room["is_open"]:
+            current_invite_link = await invite_link(context, room_id)
+        else:
+            current_invite_link = "Link inactive (room is full)"
+
         text = (
             f"Room #{room_id}\n"
+            f"Participants: {counter}\n"
             f"Amount: {room['amount']}\n"
             f"User wallet: {room['creator_wallet']}\n"
-            f"Invite link: {invite_link}"
+            f"Invite link: {current_invite_link}"
         )
         keyboard = InlineKeyboardMarkup(
             [
@@ -418,12 +466,42 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             await context.bot.send_message(chat_id=chat_id, text="Room not found.")
             return
 
+        if not room["is_open"] or room["joined_count"] >= 1:
+            await context.bot.send_message(
+                chat_id=chat_id,
+                text="This room is already full. Link is inactive.",
+                reply_markup=back_to_menu_markup(),
+            )
+            return
+
         if user.id == room["creator_id"]:
             await context.bot.send_message(chat_id=chat_id, text="You cannot join your own room.")
             return
 
-        if user.id in room["members"]:
+        if user.id == room["joined_user_id"]:
             await context.bot.send_message(chat_id=chat_id, text="You already joined this room.")
+            return
+
+        if user.id not in user_wallets:
+            await context.bot.send_message(
+                chat_id=chat_id,
+                text="Connect your wallet first from the main menu, then confirm payment again.",
+                reply_markup=main_menu_markup(),
+            )
+            return
+
+        already_pending = any(
+            req["status"] == "pending"
+            and req["room_id"] == room_id
+            and req["joiner_id"] == user.id
+            for req in join_requests.values()
+        )
+        if already_pending:
+            await context.bot.send_message(
+                chat_id=chat_id,
+                text="Your join request is already pending creator confirmation.",
+                reply_markup=back_to_menu_markup(),
+            )
             return
 
         request_id = next(join_request_counter)
@@ -483,16 +561,63 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             return
 
         joiner_id = request_data["joiner_id"]
+        joiner_username = request_data["joiner_username"]
+
         if action == "creator_join_confirm":
+            if not room["is_open"] or room["joined_count"] >= 1:
+                request_data["status"] = "rejected"
+                await context.bot.send_message(
+                    chat_id=chat_id,
+                    text="Room is already full. This request was not accepted.",
+                )
+                await context.bot.send_message(
+                    chat_id=joiner_id,
+                    text="Room is already full. Your request was not accepted.",
+                    reply_markup=main_menu_markup(),
+                )
+                return
+
             request_data["status"] = "confirmed"
-            room["members"].add(joiner_id)
-            user_rooms[joiner_id].add(room["id"])
+            room["joined_count"] = 1
+            room["joined_user_id"] = joiner_id
+            room["is_open"] = False
+
+            joiner_wallet = user_wallets.get(joiner_id)
+            new_room_id = None
+            new_room_link = None
+            if joiner_wallet:
+                new_room_id = create_room_record(
+                    creator_id=joiner_id,
+                    creator_username=joiner_username,
+                    amount=room["amount"],
+                    creator_wallet=joiner_wallet,
+                )
+                new_room_link = await invite_link(context, new_room_id)
+
+            joiner_text = "Payment confirmed. You joined the room"
+            if new_room_id and new_room_link:
+                joiner_text += (
+                    f"\n\nYour own room was created automatically.\n"
+                    f"Room #{new_room_id} ({participant_counter(rooms[new_room_id])})\n"
+                    f"Invite link: {new_room_link}"
+                )
+            else:
+                joiner_text += (
+                    "\n\nCould not auto-create your own room because your wallet is missing."
+                )
+
             await context.bot.send_message(
                 chat_id=joiner_id,
-                text="Payment confirmed. You joined the room",
+                text=joiner_text,
                 reply_markup=main_menu_markup(),
             )
-            await context.bot.send_message(chat_id=chat_id, text="User added to room.")
+            await context.bot.send_message(
+                chat_id=chat_id,
+                text=(
+                    f"User added. Room #{room['id']} is now {participant_counter(room)}.\n"
+                    "Invite link is now inactive."
+                ),
+            )
             return
 
         request_data["status"] = "rejected"

@@ -14,6 +14,10 @@ It uses inline keyboards and in-memory storage for wallet, room, and request dat
 - Admin-confirmed room creation payment flow
 - Invite links in format: `t.me/<bot_username>?start=room_<id>`
 - Creator-confirmed join payment flow
+- Participant counter in rooms: `0 of 2` or `1 of 2`
+- Invite link closes after first confirmed join (`max 2 people`)
+- Chain behavior: confirmed joiner automatically gets their own new room
+- "My Rooms" shows only rooms created by the user
 
 ## Project files
 
@@ -68,7 +72,10 @@ python3 bot.py
 2. Press **Connect Wallet** and send wallet address
 3. Press **Create Room** and enter amount
 4. Press **Confirm Payment** (admin confirms/rejects)
-5. Open **My Rooms** to see your rooms and invite links
+5. Open **My Rooms** to see rooms you created with `x of 2` status
 6. Invite users using the room link
+7. After one user joins and creator confirms payment:
+   - that room becomes full (`1 of 2`) and link is closed
+   - joiner automatically receives their own room and invite link
 
 Stop the bot with `Ctrl + C`.
