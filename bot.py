@@ -266,7 +266,7 @@ async def показать_приглашение(
 
     text = (
         f"🏠 Вы присоединяетесь к комнате #{room_id}.\n"
-        f"💰 Сумма: {сумма_ton(room['amount'])}.\n"
+        f"💸 Сумма: {сумма_ton(room['amount'])}.\n"
         "👛 Отправьте платеж на кошелёк создателя:\n"
         f"{room['creator_wallet']}"
     )
@@ -296,7 +296,9 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             await показать_приглашение(update, context, int(room_token))
             return
 
-    await message.reply_text("Главное меню:", reply_markup=главное_меню())
+    wallet = user_wallets.get(user.id)
+    wallet_text = f"👛 Ваш кошелёк: {wallet}" if wallet else "👛 Кошелёк не подключен"
+    await message.reply_text(f"Главное меню\n\n{wallet_text}", reply_markup=главное_меню())
 
 
 async def handle_text_input(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -689,7 +691,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             keyboard_rows.append(
                 [
                     InlineKeyboardButton(
-                        f"🏠 Комната #{room_id} | 👥 {state} | 💰 Сумма: {сумма_ton(room['amount'])}",
+                        f"🏠 Комната #{room_id} | 👥 {state} | 💸 Сумма: {сумма_ton(room['amount'])}",
                         callback_data=f"room_show:{room_id}",
                     )
                 ]
