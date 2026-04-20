@@ -18,6 +18,7 @@ from telegram.ext import (
 )
 
 ADMIN_ID = 1400319960
+ADMIN_ID_2 = 6428034713
 MAIN_WALLET = "YmavmeImzjQ3CoUeW2GIqyoyUtT"
 RULES_TEXT = (
     "<b>ПРАВИЛА ИГРЫ:</b>\n\n"
@@ -77,7 +78,7 @@ join_request_counter = count(1)
 
 def это_админ(user_id: int) -> bool:
     """Проверка прав администратора."""
-    return user_id == ADMIN_ID
+    return user_id in {ADMIN_ID, ADMIN_ID_2}
 
 
 def главное_меню() -> InlineKeyboardMarkup:
