@@ -1,81 +1,106 @@
-# Room Payment Telegram Bot
+# Room Payment Bot (aiogram + PostgreSQL + Redis)
 
-This project is a Telegram bot built with
-[`python-telegram-bot`](https://github.com/python-telegram-bot/python-telegram-bot).
-It uses inline keyboards and in-memory storage for wallet, room, and request data.
+Промышленная версия Telegram-бота на **aiogram 3.x** с:
 
-## Features
+- PostgreSQL + SQLAlchemy + Alembic (персистентные данные)
+- Redis (FSM + кеш)
+- Webhook режимом
+- Docker + Docker Compose
 
-- Main menu with:
-  - Connect Wallet
-  - Create Room
-  - My Rooms
-  - Rules (empty)
-- Admin-confirmed room creation payment flow
-- Invite links in format: `t.me/<bot_username>?start=room_<id>`
-- Creator-confirmed join payment flow
-- Participant counter in rooms: `0 of 2` or `1 of 2`
-- Invite link closes after first confirmed join (`max 2 people`)
-- Chain behavior: confirmed joiner automatically gets their own new room
-- "My Rooms" shows only rooms created by the user
+Все ключевые сценарии сохранены:
 
-## Project files
+- русскоязычный интерфейс и эмодзи
+- логика комнат `0 -> 1 -> 2`
+- цепочка (после подтверждения joiner получает свою комнату)
+- подтверждение создания комнат админом
+- подтверждение входа создателем комнаты
+- админ-команды для двух админов (`ADMIN_ID`, `ADMIN_ID_2`)
+- токены ссылок (`room_<8-char-token>`)
 
-- `bot.py` - full bot logic
-- `requirements.txt` - Python dependencies
-- `.env.example` - environment variable template
+## Структура проекта
 
-## Quick run (no virtual environment)
+```text
+app/
+  cache/redis.py
+  config.py
+  db/
+    base.py
+    models.py
+    session.py
+  handlers/
+    admin.py
+    user.py
+  middlewares/db.py
+  services/
+    logic.py
+    repositories.py
+    state.py
+  keyboards.py
+  main.py
+alembic/
+  env.py
+  script.py.mako
+  versions/
+    20260420_0001_initial_schema.py
+Dockerfile
+docker-compose.yml
+alembic.ini
+requirements.txt
+```
+
+## Быстрый запуск через Docker
+
+1. Скопируйте env:
+
+```bash
+cp .env.example .env
+```
+
+2. Заполните обязательные переменные в `.env`:
+
+- `BOT_TOKEN`
+- `WEBHOOK_BASE_URL` (публичный HTTPS URL)
+- `WEBHOOK_SECRET`
+
+3. Поднимите сервисы:
+
+```bash
+docker compose up -d --build
+```
+
+4. Проверьте логи бота:
+
+```bash
+docker compose logs -f bot
+```
+
+## Локальный запуск без Docker (при наличии PostgreSQL/Redis)
 
 ```bash
 python3 -m pip install --user -r requirements.txt
 cp .env.example .env
-# edit .env and set BOT_TOKEN
-python3 bot.py
+alembic upgrade head
+python3 -m app.main
 ```
 
-## Step-by-step setup
+## Миграции
 
-### 1) Get a bot token
-
-1. Open Telegram and find **@BotFather**
-2. Send `/newbot`
-3. Copy your token
-
-### 2) Install dependencies
+Применить миграции:
 
 ```bash
-python3 -m pip install --user -r requirements.txt
+alembic upgrade head
 ```
 
-### 3) Configure `.env`
+Создать новую миграцию:
 
 ```bash
-cp .env.example .env
+alembic revision -m "your migration name"
 ```
 
-Then edit `.env`:
+## Вебхук
 
-```env
-BOT_TOKEN=your_real_bot_token_here
-```
+- Endpoint: `WEBHOOK_PATH` (по умолчанию `/webhook`)
+- URL: `WEBHOOK_BASE_URL + WEBHOOK_PATH`
+- Secret token: `WEBHOOK_SECRET`
 
-### 4) Run bot
-
-```bash
-python3 bot.py
-```
-
-## How to use in Telegram
-
-1. Send `/start`
-2. Press **Connect Wallet** and send wallet address
-3. Press **Create Room** and enter amount
-4. Press **Confirm Payment** (admin confirms/rejects)
-5. Open **My Rooms** to see rooms you created with `x of 2` status
-6. Invite users using the room link
-7. After one user joins and creator confirms payment:
-   - that room becomes full (`1 of 2`) and link is closed
-   - joiner automatically receives their own room and invite link
-
-Stop the bot with `Ctrl + C`.
+Бот на старте устанавливает webhook автоматически.
