@@ -18,6 +18,7 @@ class Settings(BaseSettings):
     )
 
     bot_token: str = Field(..., alias="BOT_TOKEN")
+    bot_username: str = Field("PyraLink_bot", alias="BOT_USERNAME")
     webhook_base_url: str = Field(..., alias="WEBHOOK_BASE_URL")
     webhook_path: str = Field("/webhook", alias="WEBHOOK_PATH")
     webhook_secret: str = Field("change-me", alias="WEBHOOK_SECRET")

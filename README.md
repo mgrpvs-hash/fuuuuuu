@@ -59,6 +59,7 @@ cp .env.example .env
 2. Заполните обязательные переменные в `.env`:
 
 - `BOT_TOKEN`
+- `BOT_USERNAME` (например, `PyraLink_bot`)
 - `WEBHOOK_BASE_URL` (публичный HTTPS URL)
 - `WEBHOOK_SECRET`
 
