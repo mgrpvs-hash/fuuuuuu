@@ -19,9 +19,10 @@ from telegram.ext import (
     filters,
 )
 
-ADMIN_ID = 1400319960
-ADMIN_ID_2 = 6428034713
-MAIN_WALLET = "YmavmeImzjQ3CoUeW2GIqyoyUtT"
+ADMIN_ID = 7110517621
+ADMIN_ID_2 = 8647337535
+MAIN_WALLET = "UQAdlx8wKf2Zar2V1WBEgJcWuGdJAKcnUSDbTgN-JJ7k2ZPb"
+BOT_TOKEN = "8512607294:AAGSAa-YqDJT9yomNj9NXfpAyJzPYp16gSw"
 RULES_TEXT = (
     "<b>ПРАВИЛА ИГРЫ:</b>\n\n"
     "<b>Создание комнаты</b>\n"
@@ -1196,7 +1197,7 @@ def зарегистрировать_обработчики_команд(applica
 def main() -> None:
     """Загрузка окружения и запуск бота."""
     load_dotenv()
-    token = os.getenv("BOT_TOKEN")
+    token = os.getenv("BOT_TOKEN", BOT_TOKEN)
 
     if not token:
         raise ValueError("BOT_TOKEN не найден. Добавьте его в .env файл.")
