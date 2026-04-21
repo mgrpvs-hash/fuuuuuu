@@ -215,6 +215,33 @@ class RequestRepository:
         result = await self.session.execute(query)
         return result.scalar_one_or_none()
 
+
+class AdminRepository:
+    """Administrative state mutations."""
+
+    def __init__(self, session: AsyncSession) -> None:
+        self.session = session
+
+    async def ban_user(self, user: User) -> None:
+        user.is_banned = True
+        await self.session.flush()
+
+    async def unban_user(self, user: User) -> None:
+        user.is_banned = False
+        await self.session.flush()
+
+    async def block_room(self, room: Room, reason: str) -> None:
+        room.is_blocked = True
+        room.block_reason = reason
+        room.is_open = False
+        await self.session.flush()
+
+    async def unblock_room(self, room: Room) -> None:
+        room.is_blocked = False
+        room.block_reason = None
+        room.is_open = room.joined_count < 2
+        await self.session.flush()
+
     async def create_join_request(self, room_id: int, joiner_id: int) -> JoinRequest:
         request = JoinRequest(room_id=room_id, joiner_id=joiner_id, status="pending")
         self.session.add(request)

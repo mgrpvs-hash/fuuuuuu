@@ -60,8 +60,8 @@ cp .env.example .env
 
 - `BOT_TOKEN`
 - `BOT_USERNAME` (например, `PyraLink_bot`)
-- `WEBHOOK_BASE_URL` (публичный HTTPS URL)
-- `WEBHOOK_SECRET`
+- `POSTGRES_DSN`
+- `REDIS_DSN`
 
 3. Поднимите сервисы:
 
@@ -84,6 +84,13 @@ alembic upgrade head
 python3 -m app.main
 ```
 
+По умолчанию бот стартует в **polling**-режиме.  
+Для webhook-режима укажите в `.env`:
+
+- `RUN_MODE=webhook`
+- `WEBHOOK_BASE_URL` (публичный HTTPS URL)
+- `WEBHOOK_SECRET`
+
 ## Миграции
 
 Применить миграции:
@@ -104,4 +111,4 @@ alembic revision -m "your migration name"
 - URL: `WEBHOOK_BASE_URL + WEBHOOK_PATH`
 - Secret token: `WEBHOOK_SECRET`
 
-Бот на старте устанавливает webhook автоматически.
+Webhook включается при `RUN_MODE=webhook`.

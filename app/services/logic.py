@@ -7,6 +7,7 @@ import string
 from decimal import Decimal, InvalidOperation
 from typing import Any
 
+from aiogram import Bot
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import Settings
@@ -139,8 +140,12 @@ class BotService:
         idx = await self.get_local_room_index(creator_id, room_id)
         return f"Комната #{idx}" if idx else "Комната"
 
-    def room_link(self, room: Room) -> str:
-        return f"t.me/{self.settings.bot_username}?start=room_{self.room_global_identifier(room)}"
+    async def room_link(self, bot: Bot, room: Room) -> str:
+        username = self.settings.bot_username
+        if not username:
+            me = await bot.get_me()
+            username = me.username or "your_bot"
+        return f"t.me/{username}?start=room_{self.room_global_identifier(room)}"
 
     async def create_join_request(self, joiner: User, room: Room) -> JoinRequest:
         if joiner.id == room.creator_id:
@@ -222,6 +227,8 @@ class BotService:
         user = await self.users.get_user_by_tg_id(tg_id)
         if user is None:
             return "Пользователь не найден."
+        if user.tg_id in self.admin_tg_ids:
+            return "Нельзя забанить администратора."
         await self.admin.ban_user(user)
         rooms = await self.rooms.list_creator_rooms(user.id)
         for room in rooms:

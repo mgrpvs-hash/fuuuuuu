@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 import logging
 
 from aiohttp import web
@@ -31,6 +30,11 @@ def build_dispatcher(storage: RedisStorage) -> Dispatcher:
 
 async def on_startup(bot: Bot) -> None:
     settings = get_settings()
+    # In local/test environments WEBHOOK_BASE_URL can be placeholder text.
+    # Skip webhook registration until a real public HTTPS URL is provided.
+    if not settings.webhook_base_url.startswith(("http://", "https://")):
+        logging.warning("Skipping webhook setup: WEBHOOK_BASE_URL is not configured.")
+        return
     await bot.set_webhook(
         url=settings.webhook_url,
         secret_token=settings.webhook_secret,
@@ -75,4 +79,4 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    asyncio.run(asyncio.to_thread(main))
+    main()
