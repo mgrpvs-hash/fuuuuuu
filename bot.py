@@ -2,6 +2,8 @@
 
 import logging
 import os
+import secrets
+import string
 from decimal import Decimal, InvalidOperation
 from itertools import count
 from typing import Any
@@ -65,11 +67,12 @@ created_rooms: dict[int, set[int]] = {}
 create_requests: dict[int, dict[str, Any]] = {}
 join_requests: dict[int, dict[str, Any]] = {}
 
-# Новые структуры для админ-функций.
+# Админ-данные и индексы.
 known_users: set[int] = set()
 banned_users: set[int] = set()
 blocked_rooms: set[int] = set()
 room_block_reasons: dict[int, str] = {}
+room_tokens: dict[str, int] = {}
 
 room_id_counter = count(1)
 create_request_counter = count(1)
@@ -95,9 +98,7 @@ def главное_меню() -> InlineKeyboardMarkup:
 
 def кнопка_назад_в_меню() -> InlineKeyboardMarkup:
     """Клавиатура с кнопкой возврата в меню."""
-    return InlineKeyboardMarkup(
-        [[InlineKeyboardButton("🔙 Назад", callback_data="menu_main")]]
-    )
+    return InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Назад", callback_data="menu_main")]])
 
 
 def показать_пользователя(user_id: int, username: str | None) -> str:
@@ -137,14 +138,57 @@ def распарсить_сумму(raw_text: str) -> str | None:
     return format(normalized, "f")
 
 
+def сгенерировать_токен_комнаты() -> str:
+    """Создать уникальный токен комнаты длиной 8 символов."""
+    alphabet = string.ascii_letters + string.digits
+    while True:
+        token = "".join(secrets.choice(alphabet) for _ in range(8))
+        if token not in room_tokens:
+            return token
+
+
+def глобальный_идентификатор_комнаты(room_id: int, room: dict[str, Any]) -> str:
+    """Глобальный ID комнаты для админа и ссылок (токен или старый номер)."""
+    token = room.get("token")
+    return token if token else str(room_id)
+
+
+def найти_room_id_по_идентификатору(identifier: str) -> int | None:
+    """Найти room_id по токену или старому числовому ID."""
+    if identifier in room_tokens:
+        return room_tokens[identifier]
+    if identifier.isdigit():
+        room_id = int(identifier)
+        if room_id in rooms:
+            return room_id
+    return None
+
+
+def локальный_номер_комнаты(user_id: int, room_id: int) -> int | None:
+    """Локальный номер комнаты пользователя (1,2,3...) по порядку создания."""
+    room_ids = sorted(created_rooms.get(user_id, set()))
+    try:
+        return room_ids.index(room_id) + 1
+    except ValueError:
+        return None
+
+
+def локальное_имя_комнаты(user_id: int, room_id: int) -> str:
+    """Локальное имя комнаты для пользователя: Комната #1, #2..."""
+    number = локальный_номер_комнаты(user_id, room_id)
+    return f"Комната #{number}" if number is not None else "Комната"
+
+
 def создать_комнату(
     creator_id: int, creator_username: str | None, amount: str, creator_wallet: str
 ) -> int:
     """Создание комнаты и регистрация в 'Мои комнаты' создателя."""
     room_id = next(room_id_counter)
+    token = сгенерировать_токен_комнаты()
     creator_name = f"@{creator_username}" if creator_username else str(creator_id)
     rooms[room_id] = {
         "id": room_id,
+        "token": token,
         "amount": amount,
         "creator_id": creator_id,
         "creator_name": creator_name,
@@ -155,6 +199,7 @@ def создать_комнату(
         "joined_user_ids": set(),
         "joined_usernames": {},
     }
+    room_tokens[token] = room_id
     created_rooms.setdefault(creator_id, set()).add(room_id)
     return room_id
 
@@ -191,9 +236,11 @@ async def имя_бота(context: ContextTypes.DEFAULT_TYPE) -> str:
 
 
 async def ссылка_комнаты(context: ContextTypes.DEFAULT_TYPE, room_id: int) -> str:
-    """Сформировать ссылку комнаты."""
+    """Сформировать ссылку комнаты с токеном/глобальным идентификатором."""
     bot_username = await имя_бота(context)
-    return f"t.me/{bot_username}?start=room_{room_id}"
+    room = rooms.get(room_id)
+    room_identifier = глобальный_идентификатор_комнаты(room_id, room) if room else str(room_id)
+    return f"t.me/{bot_username}?start=room_{room_identifier}"
 
 
 def пользователь_забанен(user_id: int) -> bool:
@@ -227,7 +274,7 @@ async def проверить_доступ_пользователя(update: Updat
 async def показать_приглашение(
     update: Update, context: ContextTypes.DEFAULT_TYPE, room_id: int
 ) -> None:
-    """Показ экрана присоединения по /start room_<id>."""
+    """Показ экрана присоединения по /start room_<идентификатор>."""
     user = update.effective_user
     message = update.effective_message
     if not user or not message:
@@ -253,9 +300,7 @@ async def показать_приглашение(
         return
 
     if user.id == room["creator_id"]:
-        await message.reply_text(
-            "Вы создатель этой комнаты.", reply_markup=кнопка_назад_в_меню()
-        )
+        await message.reply_text("Вы создатель этой комнаты.", reply_markup=кнопка_назад_в_меню())
         return
 
     if user.id in room["joined_user_ids"]:
@@ -265,7 +310,7 @@ async def показать_приглашение(
         return
 
     text = (
-        f"🏠 Вы присоединяетесь к комнате #{room_id}.\n"
+        "🏠 Вы присоединяетесь к комнате.\n"
         f"💸 Сумма: {сумма_ton(room['amount'])}.\n"
         "👛 Отправьте платеж на кошелёк создателя:\n"
         f"{room['creator_wallet']}"
@@ -291,10 +336,13 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         return
 
     if context.args and context.args[0].startswith("room_"):
-        room_token = context.args[0].replace("room_", "", 1)
-        if room_token.isdigit():
-            await показать_приглашение(update, context, int(room_token))
+        room_identifier = context.args[0].replace("room_", "", 1)
+        room_id = найти_room_id_по_идентификатору(room_identifier)
+        if room_id is not None:
+            await показать_приглашение(update, context, room_id)
             return
+        await message.reply_text("❌ 🏠 Комната не найдена.", reply_markup=кнопка_назад_в_меню())
+        return
 
     wallet = user_wallets.get(user.id)
     wallet_text = f"👛 Ваш кошелёк: {wallet}" if wallet else "👛 Кошелёк не подключен"
@@ -356,11 +404,16 @@ async def handle_text_input(update: Update, context: ContextTypes.DEFAULT_TYPE) 
 
 def прочитать_id_из_аргумента(args: list[str]) -> int | None:
     """Парсинг целого ID из первого аргумента команды."""
-    if not args:
-        return None
-    if not args[0].isdigit():
+    if not args or not args[0].isdigit():
         return None
     return int(args[0])
+
+
+def прочитать_идентификатор_комнаты(args: list[str]) -> str | None:
+    """Парсинг идентификатора комнаты (токен или число)."""
+    if not args:
+        return None
+    return args[0].strip()
 
 
 async def только_админ(update: Update) -> bool:
@@ -425,11 +478,12 @@ async def cmd_rooms(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     lines = ["Все комнаты:"]
     for room_id in sorted(rooms):
         room = rooms[room_id]
+        identifier = глобальный_идентификатор_комнаты(room_id, room)
         creator = показать_пользователя(room["creator_id"], room.get("creator_username"))
         status = статус_комнаты(room)
         block_mark = " [ЗАБЛОКИРОВАНА]" if комната_заблокирована(room_id) else ""
         lines.append(
-            f"#{room_id} | {status} | {сумма_ton(room['amount'])} | {creator}{block_mark}"
+            f"{identifier} | {status} | {сумма_ton(room['amount'])} | {creator}{block_mark}"
         )
     await message.reply_text("\n".join(lines))
 
@@ -446,8 +500,8 @@ async def cmd_ban(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if target_id is None:
         await message.reply_text("Использование: /ban <user_id>")
         return
-    if target_id == ADMIN_ID:
-        await message.reply_text("Нельзя забанить самого администратора.")
+    if target_id in {ADMIN_ID, ADMIN_ID_2}:
+        await message.reply_text("Нельзя забанить администратора.")
         return
 
     banned_users.add(target_id)
@@ -478,16 +532,21 @@ async def cmd_unban(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
 
 async def cmd_block_room(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """/block_room <room_id> — блокировка комнаты."""
+    """/block_room <room_id_or_token> — блокировка комнаты."""
     if not await только_админ(update):
         return
     message = update.effective_message
     if not message:
         return
 
-    room_id = прочитать_id_из_аргумента(context.args)
+    identifier = прочитать_идентификатор_комнаты(context.args)
+    if not identifier:
+        await message.reply_text("Использование: /block_room <room_id_or_token>")
+        return
+
+    room_id = найти_room_id_по_идентификатору(identifier)
     if room_id is None:
-        await message.reply_text("Использование: /block_room <room_id>")
+        await message.reply_text("Комната не найдена.")
         return
     room = rooms.get(room_id)
     if not room:
@@ -497,20 +556,26 @@ async def cmd_block_room(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     blocked_rooms.add(room_id)
     room["is_open"] = False
     room_block_reasons[room_id] = "Комната заблокирована администратором."
-    await message.reply_text(f"Комната #{room_id} заблокирована.")
+    global_id = глобальный_идентификатор_комнаты(room_id, room)
+    await message.reply_text(f"Комната {global_id} заблокирована.")
 
 
 async def cmd_unblock_room(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """/unblock_room <room_id> — разблокировка комнаты."""
+    """/unblock_room <room_id_or_token> — разблокировка комнаты."""
     if not await только_админ(update):
         return
     message = update.effective_message
     if not message:
         return
 
-    room_id = прочитать_id_из_аргумента(context.args)
+    identifier = прочитать_идентификатор_комнаты(context.args)
+    if not identifier:
+        await message.reply_text("Использование: /unblock_room <room_id_or_token>")
+        return
+
+    room_id = найти_room_id_по_идентификатору(identifier)
     if room_id is None:
-        await message.reply_text("Использование: /unblock_room <room_id>")
+        await message.reply_text("Комната не найдена.")
         return
     room = rooms.get(room_id)
     if not room:
@@ -527,7 +592,8 @@ async def cmd_unblock_room(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     blocked_rooms.discard(room_id)
     room_block_reasons.pop(room_id, None)
     room["is_open"] = True
-    await message.reply_text(f"Комната #{room_id} разблокирована.")
+    global_id = глобальный_идентификатор_комнаты(room_id, room)
+    await message.reply_text(f"Комната {global_id} разблокирована.")
 
 
 async def cmd_broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -565,16 +631,21 @@ def формат_участников_комнаты(room: dict[str, Any]) -> st
 
 
 async def cmd_debug_room(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """/debug_room <room_id> — детальные данные по комнате."""
+    """/debug_room <room_id_or_token> — детальные данные по комнате."""
     if not await только_админ(update):
         return
     message = update.effective_message
     if not message:
         return
 
-    room_id = прочитать_id_из_аргумента(context.args)
+    identifier = прочитать_идентификатор_комнаты(context.args)
+    if not identifier:
+        await message.reply_text("Использование: /debug_room <room_id_or_token>")
+        return
+
+    room_id = найти_room_id_по_идентификатору(identifier)
     if room_id is None:
-        await message.reply_text("Использование: /debug_room <room_id>")
+        await message.reply_text("Комната не найдена.")
         return
     room = rooms.get(room_id)
     if not room:
@@ -585,9 +656,10 @@ async def cmd_debug_room(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     participants = формат_участников_комнаты(room)
     link_active = "да" if (room["is_open"] and room["joined_count"] < 2 and room_id not in blocked_rooms) else "нет"
     is_blocked = "да" if room_id in blocked_rooms else "нет"
+    global_id = глобальный_идентификатор_комнаты(room_id, room)
 
     text = (
-        f"Debug комнаты #{room_id}\n"
+        f"Debug комнаты {global_id}\n"
         f"Создатель: {creator}\n"
         f"Участники: {participants}\n"
         f"Сумма: {сумма_ton(room['amount'])}\n"
@@ -618,8 +690,16 @@ async def cmd_chain(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             participated.append(room_id)
     participated.sort()
 
-    created_text = ", ".join(f"#{rid}" for rid in created) if created else "нет"
-    part_text = ", ".join(f"#{rid}" for rid in participated) if participated else "нет"
+    created_text = (
+        ", ".join(глобальный_идентификатор_комнаты(rid, rooms[rid]) for rid in created if rid in rooms)
+        if created
+        else "нет"
+    )
+    part_text = (
+        ", ".join(глобальный_идентификатор_комнаты(rid, rooms[rid]) for rid in participated if rid in rooms)
+        if participated
+        else "нет"
+    )
     await message.reply_text(
         f"Цепочка пользователя {target_id}\n"
         f"Созданные комнаты: {created_text}\n"
@@ -688,10 +768,11 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             if not room:
                 continue
             state = счетчик_комнаты(room)
+            local_name = локальное_имя_комнаты(user.id, room_id)
             keyboard_rows.append(
                 [
                     InlineKeyboardButton(
-                        f"🏠 Комната #{room_id} | 👥 {state} | 💸 Сумма: {сумма_ton(room['amount'])}",
+                        f"🏠 {local_name} | 👥 {state} | 💸 Сумма: {сумма_ton(room['amount'])}",
                         callback_data=f"room_show:{room_id}",
                     )
                 ]
@@ -769,7 +850,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         return
 
     if data.startswith("admin_create_confirm:") or data.startswith("admin_create_reject:"):
-        if user.id != ADMIN_ID:
+        if not это_админ(user.id):
             await query.answer("Это действие доступно только администратору.", show_alert=True)
             return
 
@@ -812,9 +893,10 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
                 text="Комната успешно создана.",
                 reply_markup=главное_меню(),
             )
+            local_name = локальное_имя_комнаты(creator_id, room_id)
             await context.bot.send_message(
                 chat_id=chat_id,
-                text=f"Комната #{room_id} создана ({счетчик_комнаты(rooms[room_id])}).",
+                text=f"{local_name} создана ({счетчик_комнаты(rooms[room_id])}).",
             )
             return
 
@@ -841,28 +923,38 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             )
             return
 
+        local_name = локальное_имя_комнаты(user.id, room_id)
         counter = счетчик_комнаты(room)
+        active_link = None
         if комната_заблокирована(room_id):
-            current_invite_link = "Ссылка неактивна (комната заблокирована)"
+            link_state = "Ссылка неактивна (комната заблокирована)"
         elif room["is_open"]:
-            current_invite_link = await ссылка_комнаты(context, room_id)
+            active_link = await ссылка_комнаты(context, room_id)
+            link_state = "Ссылка активна"
         else:
-            current_invite_link = "Ссылка неактивна (комната заполнена)"
+            link_state = "Ссылка неактивна (комната заполнена)"
 
         text = (
-            f"Комната #{room_id}\n"
-            f"Участники: {counter}\n"
+            f"🏠 {local_name}\n"
+            f"👥 Участники: {counter}\n"
             f"Сумма: {сумма_ton(room['amount'])}\n"
-            f"Кошелёк создателя: {room['creator_wallet']}\n"
-            f"Ссылка: {current_invite_link}"
+            f"👛 Кошелёк создателя: {room['creator_wallet']}\n"
+            f"🔗 {link_state}"
         )
-        keyboard = InlineKeyboardMarkup(
+        keyboard_rows = []
+        if active_link:
+            keyboard_rows.append([InlineKeyboardButton("🔗 Открыть ссылку", url=f"https://{active_link}")])
+        keyboard_rows.extend(
             [
                 [InlineKeyboardButton("Назад в мои комнаты", callback_data="menu_my_rooms")],
                 [InlineKeyboardButton("Назад в меню", callback_data="menu_main")],
             ]
         )
-        await context.bot.send_message(chat_id=chat_id, text=text, reply_markup=keyboard)
+        await context.bot.send_message(
+            chat_id=chat_id,
+            text=text,
+            reply_markup=InlineKeyboardMarkup(keyboard_rows),
+        )
         return
 
     if data.startswith("join_confirm_payment:"):
@@ -929,8 +1021,9 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             "status": "pending",
         }
 
+        creator_local_name = локальное_имя_комнаты(room["creator_id"], room_id)
         creator_text = (
-            f"Пользователь [{показать_пользователя(user.id, user.username)}] хочет присоединиться к вашей комнате #{room_id}\n"
+            f"Пользователь [{показать_пользователя(user.id, user.username)}] хочет присоединиться к вашей {creator_local_name.lower()}\n"
             f"Сумма: {сумма_ton(room['amount'])}"
         )
         creator_keyboard = InlineKeyboardMarkup(
@@ -1020,7 +1113,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 
             joiner_wallet = user_wallets.get(joiner_id)
             new_room_id = None
-            new_room_link = None
             if joiner_wallet:
                 new_room_id = создать_комнату(
                     creator_id=joiner_id,
@@ -1028,16 +1120,16 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
                     amount=room["amount"],
                     creator_wallet=joiner_wallet,
                 )
-                new_room_link = await ссылка_комнаты(context, new_room_id)
 
-            joiner_text = f"Оплата подтверждена. Вы присоединились к комнате #{room['id']}."
-            if new_room_id and new_room_link:
+            joiner_text = "Оплата подтверждена. Вы присоединились к комнате."
+            if new_room_id:
+                local_new = локальное_имя_комнаты(joiner_id, new_room_id)
                 joiner_text += (
                     "\n\nВам автоматически создана собственная комната:\n"
-                    f"Комната #{new_room_id} | {счетчик_комнаты(rooms[new_room_id])} | "
+                    f"{local_new} | {счетчик_комнаты(rooms[new_room_id])} | "
                     f"Сумма: {сумма_ton(rooms[new_room_id]['amount'])}\n"
                     f"Кошелёк: {joiner_wallet}\n"
-                    f"Ссылка: {new_room_link}"
+                    "Откройте «Мои комнаты», чтобы увидеть ссылку."
                 )
             await context.bot.send_message(
                 chat_id=joiner_id,
@@ -1045,6 +1137,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
                 reply_markup=главное_меню(),
             )
 
+            creator_local_name = локальное_имя_комнаты(room["creator_id"], room["id"])
             статус_ссылки = (
                 "Ссылка неактивна."
                 if not room["is_open"]
@@ -1052,7 +1145,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             )
             creator_text = (
                 f"Пользователь {показать_пользователя(joiner_id, joiner_username)} добавлен. "
-                f"Комната #{room['id']} теперь {счетчик_комнаты(room)}. {статус_ссылки}"
+                f"{creator_local_name} теперь {счетчик_комнаты(room)}. {статус_ссылки}"
             )
             await context.bot.send_message(chat_id=chat_id, text=creator_text)
             return
