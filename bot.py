@@ -722,6 +722,10 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     data = query.data or ""
     chat_id = query.message.chat_id if query.message else user.id
 
+    if data == "copy_room_link":
+        await query.answer("✅ Ссылка скопирована")
+        return
+
     if data == "menu_main":
         user_states.pop(user.id, None)
         await отправить_главное_меню(context, chat_id)
@@ -947,6 +951,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
                 [
                     InlineKeyboardButton(
                         "📋 Скопировать ссылку",
+                        callback_data="copy_room_link",
                         copy_text=CopyTextButton(text=active_link),
                     )
                 ]
