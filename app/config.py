@@ -29,10 +29,10 @@ class Settings(BaseSettings):
     redis_dsn: str = Field(..., alias="REDIS_DSN")
     alembic_database_url: str = Field("", alias="ALEMBIC_DATABASE_URL")
 
-    admin_id: int = Field(1400319960, alias="ADMIN_ID")
-    admin_id_2: int = Field(6428034713, alias="ADMIN_ID_2")
+    admin_id: int = Field(7110517621, alias="ADMIN_ID")
+    admin_id_2: int = Field(8647337535, alias="ADMIN_ID_2")
     main_wallet: str = Field(
-        "YmavmeImzjQ3CoUeW2GIqyoyUtT",
+        "UQAdlx8wKf2Zar2VW1BEgJcWuGdJAKcnUSDbTgN-JJ7k2ZPb",
         alias="MAIN_WALLET",
     )
     rules_text: str = Field("", alias="RULES_TEXT")
