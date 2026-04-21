@@ -33,7 +33,7 @@ class Settings(BaseSettings):
     admin_id: int = Field(7110517621, alias="ADMIN_ID")
     admin_id_2: int = Field(8647337535, alias="ADMIN_ID_2")
     main_wallet: str = Field(
-        "UQAdlx8wKf2Zar2VW1BEgJcWuGdJAKcnUSDbTgN-JJ7k2ZPb",
+        "UQAdlx8wKf2Zar2V1WBEgJcWuGdJAKcnUSDbTgN-JJ7k2ZPb",
         alias="MAIN_WALLET",
     )
     rules_text: str = Field("", alias="RULES_TEXT")
