@@ -9,7 +9,7 @@ from itertools import count
 from typing import Any
 
 from dotenv import load_dotenv
-from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
+from telegram import CopyTextButton, InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import (
     Application,
     CallbackQueryHandler,
@@ -943,7 +943,14 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         )
         keyboard_rows = []
         if active_link:
-            keyboard_rows.append([InlineKeyboardButton("🔗 Открыть ссылку", url=f"https://{active_link}")])
+            keyboard_rows.append(
+                [
+                    InlineKeyboardButton(
+                        "📋 Скопировать ссылку",
+                        copy_text=CopyTextButton(text=active_link),
+                    )
+                ]
+            )
         keyboard_rows.extend(
             [
                 [InlineKeyboardButton("Назад в мои комнаты", callback_data="menu_my_rooms")],
