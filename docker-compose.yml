@@ -1,0 +1,47 @@
+version: "3.9"
+
+services:
+  bot:
+    build: .
+    container_name: pyralink-bot
+    env_file:
+      - .env
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+
+  postgres:
+    image: postgres:16-alpine
+    container_name: pyralink-postgres
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-pyralink}
+      POSTGRES_USER: ${POSTGRES_USER:-pyralink}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-pyralink}
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-pyralink} -d ${POSTGRES_DB:-pyralink}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    restart: unless-stopped
+
+  redis:
+    image: redis:7-alpine
+    container_name: pyralink-redis
+    command: ["redis-server", "--appendonly", "yes"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    volumes:
+      - redis_data:/data
+    restart: unless-stopped
+
+volumes:
+  postgres_data:
+  redis_data:
