@@ -1,0 +1,17 @@
+{
+  "name": "telegram-monopoly-miniapp",
+  "version": "1.0.0",
+  "private": true,
+  "workspaces": [
+    "apps/server",
+    "apps/client"
+  ],
+  "scripts": {
+    "dev": "concurrently \"npm run dev --workspace @miniapp/server\" \"npm run dev --workspace @miniapp/client\"",
+    "build": "npm run build --workspace @miniapp/server && npm run build --workspace @miniapp/client",
+    "lint": "npm run lint --workspace @miniapp/server && npm run lint --workspace @miniapp/client"
+  },
+  "devDependencies": {
+    "concurrently": "^9.2.1"
+  }
+}

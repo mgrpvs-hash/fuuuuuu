@@ -1,0 +1,36 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id             String        @id @default(cuid())
+  telegramId     String?       @unique
+  name           String
+  avatarUrl      String?
+  balance        Int           @default(5000)
+  wins           Int           @default(0)
+  gamesPlayed    Int           @default(0)
+  totalPayout    Int           @default(0)
+  totalEntryFees Int           @default(0)
+  createdAt      DateTime      @default(now())
+  updatedAt      DateTime      @updatedAt
+  results        MatchResult[]
+}
+
+model MatchResult {
+  id        String   @id @default(cuid())
+  userId    String
+  placement Int
+  entryFee  Int
+  payout    Int
+  createdAt DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+}
