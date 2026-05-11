@@ -3,7 +3,9 @@
   "version": "1.0.0",
   "type": "module",
   "scripts": {
+    "predev": "npm --workspace @monopoly/shared run build",
     "dev": "tsx watch src/index.ts",
+    "prebuild": "npm --workspace @monopoly/shared run build",
     "build": "tsc -p tsconfig.json",
     "start": "node dist/index.js",
     "prisma:generate": "prisma generate",

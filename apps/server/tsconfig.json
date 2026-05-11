@@ -1,13 +1,7 @@
 {
   "extends": "../../tsconfig.base.json",
   "compilerOptions": {
-    "outDir": "dist",
-    "baseUrl": ".",
-    "paths": {
-      "@monopoly/shared": [
-        "../../packages/shared/src"
-      ]
-    }
+    "outDir": "dist"
   },
   "include": [
     "src/**/*.ts"

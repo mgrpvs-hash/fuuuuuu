@@ -4,12 +4,7 @@
     "jsx": "react-jsx",
     "baseUrl": ".",
     "paths": {
-      "@/*": [
-        "src/*"
-      ],
-      "@monopoly/shared": [
-        "../../packages/shared/src"
-      ]
+      "@/*": ["src/*"]
     }
   },
   "references": [

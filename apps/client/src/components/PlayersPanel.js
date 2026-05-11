@@ -1,9 +1,0 @@
-import { jsx as _jsx, jsxs as _jsxs } from "react/jsx-runtime";
-import { playerColorHex } from "@/theme";
-export function PlayersPanel({ game, meId, onOpenTrade }) {
-    return (_jsxs("div", { className: "glass-panel rounded-card border p-3", children: [_jsxs("div", { className: "mb-2 flex items-center justify-between", children: [_jsx("div", { className: "text-xs uppercase tracking-wide text-emerald-300", children: "\u0418\u0433\u0440\u043E\u043A\u0438" }), _jsx("button", { className: "rounded-lg border border-borderSoft bg-panel px-2 py-1 text-xs text-emerald-100", onClick: onOpenTrade, children: "\u041E\u0431\u043C\u0435\u043D\u044B" })] }), _jsx("div", { className: "space-y-2", children: game.players.map((player) => {
-                    const isCurrent = player.id === game.currentTurnPlayerId;
-                    const isMe = player.id === meId;
-                    return (_jsx("div", { className: `rounded-xl border p-2 ${isCurrent ? "border-gold bg-gold/10" : "border-borderSoft bg-panel/75"}`, children: _jsxs("div", { className: "flex items-center justify-between gap-2", children: [_jsxs("div", { className: "flex items-center gap-2", children: [_jsx("div", { className: "h-7 w-7 rounded-full border border-black/35", style: { backgroundColor: playerColorHex[player.color] } }), _jsxs("div", { children: [_jsxs("div", { className: "text-sm font-semibold text-emerald-100", children: [player.name, " ", isMe && _jsx("span", { className: "text-xs text-gold", children: "(\u0412\u044B)" })] }), _jsxs("div", { className: "text-[11px] text-emerald-300", children: ["\uD83E\uDE99 ", player.balance] })] })] }), _jsxs("div", { className: "text-right text-[11px] text-emerald-300", children: [_jsxs("div", { children: ["\u0423\u043B\u0438\u0446: ", player.properties.length] }), _jsx("div", { children: player.isBankrupt ? "Банкрот" : player.debtMode ? "Debt mode" : "Активен" })] })] }) }, player.id));
-                }) })] }));
-}

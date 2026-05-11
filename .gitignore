@@ -4,6 +4,7 @@ dist
 .env
 .env.local
 *.log
+*.tsbuildinfo
 apps/server/dev.db
 apps/server/dev.db-journal
 apps/server/prisma/dev.db

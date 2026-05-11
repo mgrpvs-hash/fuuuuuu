@@ -4,8 +4,10 @@
   "version": "1.0.0",
   "type": "module",
   "scripts": {
+    "predev": "npm --workspace @monopoly/shared run build",
     "dev": "vite",
-    "build": "tsc -b && vite build",
+    "prebuild": "npm --workspace @monopoly/shared run build",
+    "build": "tsc --noEmit && vite build",
     "preview": "vite preview",
     "lint": "tsc --noEmit"
   },
