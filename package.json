@@ -1,0 +1,30 @@
+{
+  "name": "monopoly-telegram-webapp",
+  "private": true,
+  "version": "1.0.0",
+  "description": "Multiplayer Monopoly style game",
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
+  "scripts": {
+    "dev": "concurrently -n shared,server,client \"npm run build:watch -w @monopoly/shared\" \"npm run dev -w @monopoly/server\" \"npm run dev -w @monopoly/client\"",
+    "build": "npm run build -w @monopoly/shared && npm run build -w @monopoly/server && npm run build -w @monopoly/client",
+    "lint": "npm run lint -w @monopoly/shared && npm run lint -w @monopoly/server && npm run lint -w @monopoly/client",
+    "prisma:push": "npm run prisma:push -w @monopoly/server"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/mgrpvs-hash/fuuuuuu.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "bugs": {
+    "url": "https://github.com/mgrpvs-hash/fuuuuuu/issues"
+  },
+  "homepage": "https://github.com/mgrpvs-hash/fuuuuuu#readme",
+  "devDependencies": {
+    "concurrently": "^9.2.1"
+  }
+}

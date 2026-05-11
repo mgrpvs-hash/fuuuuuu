@@ -1,0 +1,35 @@
+{
+  "name": "@monopoly/server",
+  "version": "1.0.0",
+  "description": "Monopoly backend server",
+  "type": "module",
+  "main": "dist/index.js",
+  "scripts": {
+    "dev": "prisma db push --skip-generate && prisma generate && tsx watch src/index.ts",
+    "build": "tsc -p tsconfig.json",
+    "start": "prisma db push --skip-generate && node dist/index.js",
+    "lint": "tsc --noEmit",
+    "prisma:push": "prisma db push",
+    "prisma:generate": "prisma generate"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "@monopoly/shared": "*",
+    "@prisma/client": "^6.8.2",
+    "cors": "^2.8.5",
+    "dotenv": "^16.6.1",
+    "express": "^5.1.0",
+    "socket.io": "^4.8.1",
+    "zod": "^3.25.32"
+  },
+  "devDependencies": {
+    "@types/cors": "^2.8.19",
+    "@types/express": "^5.0.3",
+    "@types/node": "^24.10.1",
+    "prisma": "^6.8.2",
+    "tsx": "^4.20.6",
+    "typescript": "^5.9.3"
+  }
+}
