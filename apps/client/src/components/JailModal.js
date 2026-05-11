@@ -1,0 +1,7 @@
+import { jsx as _jsx, jsxs as _jsxs } from "react/jsx-runtime";
+export function JailModal({ open, player, onPay, onRoll, onUseCard }) {
+    if (!open || !player) {
+        return null;
+    }
+    return (_jsx("div", { className: "fixed inset-0 z-40 flex items-center justify-center bg-black/70 p-4", children: _jsxs("div", { className: "glass-panel w-full max-w-sm rounded-card border p-4", children: [_jsx("h3", { className: "text-lg font-semibold text-gold", children: "\u0422\u044E\u0440\u044C\u043C\u0430" }), _jsxs("p", { className: "mt-2 text-sm text-emerald-100", children: ["\u041F\u043E\u043F\u044B\u0442\u043A\u0438 \u0432\u044B\u0445\u043E\u0434\u0430: ", player.jailAttempts, "/3"] }), _jsxs("div", { className: "mt-4 space-y-2", children: [_jsx("button", { className: "w-full rounded-xl bg-gradient-to-r from-green to-gold px-4 py-2 text-sm font-semibold text-black", onClick: onPay, children: "\u0417\u0430\u043F\u043B\u0430\u0442\u0438\u0442\u044C \u0448\u0442\u0440\u0430\u0444" }), _jsx("button", { className: "w-full rounded-xl border border-borderSoft bg-panel px-4 py-2 text-sm", onClick: onRoll, children: "\u0411\u0440\u043E\u0441\u0438\u0442\u044C \u043A\u0443\u0431\u0438\u043A\u0438" }), _jsxs("button", { className: "w-full rounded-xl border border-borderSoft bg-panel px-4 py-2 text-sm disabled:opacity-40", disabled: !player.getOutOfJailCards, onClick: onUseCard, children: ["\u0418\u0441\u043F\u043E\u043B\u044C\u0437\u043E\u0432\u0430\u0442\u044C \u043A\u0430\u0440\u0442\u0443 (", player.getOutOfJailCards, ")"] })] })] }) }));
+}

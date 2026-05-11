@@ -1,0 +1,36 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+model Profile {
+  id            String   @id
+  name          String
+  avatarUrl     String?
+  balance       Int      @default(20000)
+  gamesPlayed   Int      @default(0)
+  wins          Int      @default(0)
+  losses        Int      @default(0)
+  totalProfit   Int      @default(0)
+  totalWonCoins Int      @default(0)
+  bestWin       Int      @default(0)
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+}
+
+model MatchResult {
+  id        String   @id @default(cuid())
+  roomCode  String
+  playerId  String
+  playerName String
+  placement Int
+  entryFee  Int
+  payout    Int
+  profit    Int
+  won       Boolean
+  createdAt DateTime @default(now())
+}

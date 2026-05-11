@@ -1,0 +1,14 @@
+import { jsx as _jsx, jsxs as _jsxs } from "react/jsx-runtime";
+import { useMemo, useState } from "react";
+export function LeaderboardScreen({ entries }) {
+    const [mode, setMode] = useState("wins");
+    const sorted = useMemo(() => {
+        return [...entries].sort((a, b) => {
+            if (mode === "wins")
+                return b.wins - a.wins || b.totalProfit - a.totalProfit;
+            return b.totalProfit - a.totalProfit || b.wins - a.wins;
+        });
+    }, [entries, mode]);
+    const top3 = sorted.slice(0, 3);
+    return (_jsxs("div", { className: "space-y-4", children: [_jsxs("div", { className: "glass-panel rounded-card border p-4", children: [_jsxs("div", { className: "mb-3 flex items-center justify-between", children: [_jsx("h2", { className: "text-xl font-bold text-gold", children: "\u041B\u0438\u0434\u0435\u0440\u0431\u043E\u0440\u0434" }), _jsxs("div", { className: "flex rounded-xl border border-borderSoft bg-panel p-1 text-xs", children: [_jsx("button", { className: `rounded-lg px-3 py-1 ${mode === "wins" ? "bg-gold text-black" : ""}`, onClick: () => setMode("wins"), children: "\u041F\u043E \u043F\u043E\u0431\u0435\u0434\u0430\u043C" }), _jsx("button", { className: `rounded-lg px-3 py-1 ${mode === "profit" ? "bg-gold text-black" : ""}`, onClick: () => setMode("profit"), children: "\u041F\u043E \u043F\u0440\u0438\u0431\u044B\u043B\u0438" })] })] }), _jsx("div", { className: "grid gap-3 md:grid-cols-3", children: top3.map((entry, index) => (_jsxs("div", { className: "rounded-xl border border-gold/35 bg-gradient-to-b from-gold/20 to-panel p-3", children: [_jsxs("div", { className: "text-xs text-gold", children: ["#", index + 1] }), _jsx("div", { className: "mt-1 text-lg font-semibold", children: entry.name }), _jsxs("div", { className: "mt-2 text-xs text-emerald-100", children: ["\u041F\u043E\u0431\u0435\u0434\u044B: ", entry.wins] }), _jsxs("div", { className: "text-xs text-emerald-100", children: ["\u041F\u0440\u0438\u0431\u044B\u043B\u044C: \uD83E\uDE99 ", entry.totalProfit] })] }, entry.playerId))) })] }), _jsx("div", { className: "glass-panel rounded-card border p-4", children: _jsx("div", { className: "space-y-2", children: sorted.map((entry, index) => (_jsx("div", { className: "rounded-xl border border-borderSoft bg-panel/75 p-3", children: _jsxs("div", { className: "flex items-center justify-between gap-3", children: [_jsxs("div", { className: "flex items-center gap-3", children: [_jsxs("div", { className: "h-8 w-8 rounded-full bg-gold/20 text-center text-sm leading-8 text-gold", children: ["#", index + 1] }), _jsxs("div", { children: [_jsx("div", { className: "font-semibold", children: entry.name }), _jsxs("div", { className: "text-xs text-emerald-300", children: ["\u041F\u043E\u0431\u0435\u0434\u044B: ", entry.wins] })] })] }), _jsxs("div", { className: "text-right text-sm text-emerald-100", children: ["\uD83E\uDE99 ", entry.totalProfit] })] }) }, entry.playerId))) }) })] }));
+}

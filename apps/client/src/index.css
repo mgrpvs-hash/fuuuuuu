@@ -1,0 +1,36 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  color: #ecfdf5;
+  background-color: #07130e;
+  font-family:
+    "Inter",
+    "Segoe UI",
+    system-ui,
+    sans-serif;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  min-height: 100vh;
+  background:
+    radial-gradient(circle at 20% 20%, rgba(251, 191, 36, 0.08), transparent 35%),
+    radial-gradient(circle at 75% 12%, rgba(34, 197, 94, 0.12), transparent 30%),
+    #07130e;
+}
+
+#root {
+  min-height: 100vh;
+}
+
+.glass-panel {
+  background: linear-gradient(160deg, rgba(18, 40, 33, 0.88), rgba(9, 22, 18, 0.86));
+  border: 1px solid rgba(42, 74, 61, 0.7);
+  backdrop-filter: blur(8px);
+}

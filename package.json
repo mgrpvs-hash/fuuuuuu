@@ -1,0 +1,17 @@
+{
+  "name": "telegram-monopoly-mvp",
+  "private": true,
+  "version": "1.0.0",
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
+  "scripts": {
+    "dev:server": "npm --workspace @monopoly/server run dev",
+    "dev:client": "npm --workspace @monopoly/client run dev",
+    "build": "npm run build --workspaces",
+    "lint": "npm run lint --workspaces",
+    "prisma:generate": "npm --workspace @monopoly/server run prisma:generate",
+    "prisma:migrate": "npm --workspace @monopoly/server run prisma:migrate"
+  }
+}
