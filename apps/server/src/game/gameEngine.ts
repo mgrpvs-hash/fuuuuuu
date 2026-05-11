@@ -499,7 +499,7 @@ export class GameEngine {
   }
 
   async refreshLeaderboard(): Promise<void> {
-    const [wins, profits] = await Promise.all([
+    const [wins, profits] = (await Promise.all([
       this.prisma.playerStats.findMany({
         orderBy: [{ wins: "desc" }, { totalProfit: "desc" }],
         take: 10,
@@ -508,7 +508,7 @@ export class GameEngine {
         orderBy: [{ totalProfit: "desc" }, { wins: "desc" }],
         take: 10,
       }),
-    ]);
+    ])) as Array<Array<{ playerName: string; wins: number; totalProfit: number }>>;
 
     this.state.leaderboard.byWins = wins.map((entry) => ({
       playerName: entry.playerName,

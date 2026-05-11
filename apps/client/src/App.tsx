@@ -412,24 +412,25 @@ function App() {
         </section>
       </div>
 
-      <TradeModal
-        open={tradeOpen}
-        game={game}
-        myPlayerId={myPlayer?.id ?? ""}
-        onClose={() => setTradeOpen(false)}
-        onSubmit={(payload) => {
-          if (!myPlayer) return;
-          socket.emit("trade:request", {
-            playerId: myPlayer.id,
-            targetPlayerId: payload.targetPlayerId,
-            offeredPropertyIds: payload.offeredPropertyIds,
-            requestedPropertyIds: payload.requestedPropertyIds,
-            offeredMoney: payload.offeredMoney,
-            requestedMoney: payload.requestedMoney,
-          });
-          setTradeOpen(false);
-        }}
-      />
+      {tradeOpen ? (
+        <TradeModal
+          game={game}
+          myPlayerId={myPlayer?.id ?? ""}
+          onClose={() => setTradeOpen(false)}
+          onSubmit={(payload) => {
+            if (!myPlayer) return;
+            socket.emit("trade:request", {
+              playerId: myPlayer.id,
+              targetPlayerId: payload.targetPlayerId,
+              offeredPropertyIds: payload.offeredPropertyIds,
+              requestedPropertyIds: payload.requestedPropertyIds,
+              offeredMoney: payload.offeredMoney,
+              requestedMoney: payload.requestedMoney,
+            });
+            setTradeOpen(false);
+          }}
+        />
+      ) : null}
 
       {historyOpen ? (
         <div className="fixed inset-0 z-40 flex items-center justify-center bg-black/70 p-4">

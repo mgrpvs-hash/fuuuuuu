@@ -5,5 +5,7 @@ dist/
 apps/server/.env
 apps/server/dev.db
 apps/server/dev.db-journal
+apps/server/prisma/dev.db
+apps/server/prisma/dev.db-journal
 
 .DS_Store

@@ -23,19 +23,21 @@ export type PropertyColorGroup =
 
 export type OwnableTileType = "property" | "railroad" | "utility";
 
-export interface BoardTileBase {
+export interface BoardTileBase<T extends TileType = TileType> {
   index: number;
   name: string;
-  type: TileType;
+  type: T;
 }
 
-export interface TaxTile extends BoardTileBase {
-  type: "tax";
+export interface BasicBoardTile extends BoardTileBase<
+  "start" | "chance" | "jail" | "free_parking" | "go_to_jail"
+> {}
+
+export interface TaxTile extends BoardTileBase<"tax"> {
   amount: number;
 }
 
-export interface OwnableBoardTile extends BoardTileBase {
-  type: OwnableTileType;
+export interface OwnableBoardTile extends BoardTileBase<OwnableTileType> {
   colorGroup: PropertyColorGroup | "railroad" | "utility";
   price: number;
   baseRent: number;
@@ -43,7 +45,7 @@ export interface OwnableBoardTile extends BoardTileBase {
   upgradeCosts: number[];
 }
 
-export type BoardTile = BoardTileBase | TaxTile | OwnableBoardTile;
+export type BoardTile = BasicBoardTile | TaxTile | OwnableBoardTile;
 
 export interface PropertyState {
   id: string;

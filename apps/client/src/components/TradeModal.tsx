@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useState } from "react";
 import type { GameState } from "@monopoly/shared";
 
 type TradePayload = {
@@ -10,7 +10,6 @@ type TradePayload = {
 };
 
 type Props = {
-  open: boolean;
   game: GameState;
   myPlayerId: string;
   onClose: () => void;
@@ -20,40 +19,19 @@ type Props = {
 const toggle = (current: string[], value: string): string[] =>
   current.includes(value) ? current.filter((item) => item !== value) : [...current, value];
 
-export function TradeModal({ open, game, myPlayerId, onClose, onSubmit }: Props) {
+export function TradeModal({ game, myPlayerId, onClose, onSubmit }: Props) {
   const [targetPlayerId, setTargetPlayerId] = useState<string>("");
   const [offeredPropertyIds, setOfferedPropertyIds] = useState<string[]>([]);
   const [requestedPropertyIds, setRequestedPropertyIds] = useState<string[]>([]);
   const [offeredMoney, setOfferedMoney] = useState<number>(0);
   const [requestedMoney, setRequestedMoney] = useState<number>(0);
 
-  useEffect(() => {
-    if (!open) {
-      setTargetPlayerId("");
-      setOfferedPropertyIds([]);
-      setRequestedPropertyIds([]);
-      setOfferedMoney(0);
-      setRequestedMoney(0);
-    }
-  }, [open]);
-
   const myPlayer = game.players.find((player) => player.id === myPlayerId);
   const targets = game.players.filter((player) => player.id !== myPlayerId && !player.isBankrupt);
   const targetPlayer = targets.find((player) => player.id === targetPlayerId);
 
-  const myProperties = useMemo(
-    () => myPlayer?.properties.map((id) => game.properties[id]).filter(Boolean) ?? [],
-    [game.properties, myPlayer?.properties],
-  );
-
-  const targetProperties = useMemo(
-    () => targetPlayer?.properties.map((id) => game.properties[id]).filter(Boolean) ?? [],
-    [game.properties, targetPlayer?.properties],
-  );
-
-  if (!open) {
-    return null;
-  }
+  const myProperties = myPlayer?.properties.map((id) => game.properties[id]).filter(Boolean) ?? [];
+  const targetProperties = targetPlayer?.properties.map((id) => game.properties[id]).filter(Boolean) ?? [];
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4">
