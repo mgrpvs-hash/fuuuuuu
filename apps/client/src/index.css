@@ -1,0 +1,18 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  color-scheme: dark;
+  font-family: Inter, ui-sans-serif, system-ui, -apple-system, sans-serif;
+}
+
+body {
+  margin: 0;
+  background: #07130e;
+  color: #f8fafc;
+}
+
+* {
+  box-sizing: border-box;
+}
