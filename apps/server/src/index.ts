@@ -60,10 +60,18 @@ const readIdentity = (req: Request): SessionPlayer | null => {
     return null;
   }
 
+  const safeDecode = (value: string): string => {
+    try {
+      return decodeURIComponent(value);
+    } catch (_error) {
+      return value;
+    }
+  };
+
   return {
     id: String(id),
-    name: String(name),
-    avatar: String(avatar),
+    name: safeDecode(String(name)),
+    avatar: safeDecode(String(avatar)),
     color: String(color) as SessionPlayer["color"]
   };
 };
@@ -92,13 +100,19 @@ app.post("/api/auth/guest", async (_req, res) => {
   try {
     const identity = buildGuestIdentity();
     const player = await ensurePlayer(identity);
+    const playerWithInitialBalance =
+      player.balance === 5000
+        ? player
+        : await prisma.player.update({
+            where: { id: player.id },
+            data: { balance: 5000 }
+          });
     res.json({
-      player: {
-        id: player.id,
-        name: player.name,
-        avatar: player.avatar,
-        color: player.color
-      }
+      id: playerWithInitialBalance.id,
+      name: playerWithInitialBalance.name,
+      balance: playerWithInitialBalance.balance,
+      avatar: playerWithInitialBalance.avatar,
+      color: playerWithInitialBalance.color
     });
   } catch (error) {
     const parsed = serializeError(error);
@@ -131,6 +145,10 @@ app.get("/api/leaderboard", async (_req, res) => {
 
 app.get("/api/profile/:id", async (req, res) => {
   try {
+    const identity = readIdentity(req);
+    if (identity && identity.id === req.params.id) {
+      await ensurePlayer(identity);
+    }
     const profile = await getProfile(req.params.id);
     if (!profile) {
       res.status(404).json({ message: "Профиль не найден" });

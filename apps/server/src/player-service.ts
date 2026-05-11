@@ -40,7 +40,7 @@ export const ensurePlayer = async (identity: PlayerIdentity) => {
       name: identity.name,
       avatar: identity.avatar,
       color: identity.color,
-      balance: 3000
+      balance: 5000
     }
   });
 };

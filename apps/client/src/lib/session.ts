@@ -3,9 +3,36 @@ import type { SessionPlayer } from "@monopoly/shared";
 const storageKey = "monopoly-player";
 
 const colors: SessionPlayer["color"][] = ["yellow", "blue", "red", "green", "purple", "orange"];
-const avatars = ["🦊", "🦁", "🐼", "🐸", "🦉", "🐯"];
 
-const randomFrom = <T>(arr: T[]): T => arr[Math.floor(Math.random() * arr.length)];
+interface GuestAuthResponse {
+  id: string;
+  name: string;
+  balance: number;
+  avatar: string;
+  color: SessionPlayer["color"];
+}
+
+export interface BootstrapSessionResult {
+  player: SessionPlayer;
+  balance: number | null;
+}
+
+const isValidSessionPlayer = (value: unknown): value is SessionPlayer => {
+  if (!value || typeof value !== "object") {
+    return false;
+  }
+  const candidate = value as Record<string, unknown>;
+  return (
+    typeof candidate.id === "string" &&
+    candidate.id.length > 0 &&
+    typeof candidate.name === "string" &&
+    candidate.name.length > 0 &&
+    typeof candidate.avatar === "string" &&
+    candidate.avatar.length > 0 &&
+    typeof candidate.color === "string" &&
+    candidate.color.length > 0
+  );
+};
 
 const buildTelegramPlayer = (): SessionPlayer | null => {
   const tg = (window as any).Telegram?.WebApp;
@@ -33,8 +60,14 @@ export const loadPlayerFromStorage = (): SessionPlayer | null => {
     return null;
   }
   try {
-    return JSON.parse(raw) as SessionPlayer;
+    const parsed: unknown = JSON.parse(raw);
+    if (!isValidSessionPlayer(parsed)) {
+      localStorage.removeItem(storageKey);
+      return null;
+    }
+    return parsed;
   } catch (_error) {
+    localStorage.removeItem(storageKey);
     return null;
   }
 };
@@ -43,33 +76,46 @@ export const savePlayerToStorage = (player: SessionPlayer) => {
   localStorage.setItem(storageKey, JSON.stringify(player));
 };
 
-export const bootstrapSession = async (apiBaseUrl: string): Promise<SessionPlayer> => {
+const createGuestPlayer = async (apiBaseUrl: string): Promise<GuestAuthResponse> => {
+  const response = await fetch(`${apiBaseUrl}/api/auth/guest`, {
+    method: "POST"
+  });
+  const payload = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    const message = typeof payload?.message === "string" ? payload.message : "неизвестная ошибка";
+    throw new Error(`Не удалось создать гостя: ${message}`);
+  }
+  if (
+    typeof payload.id !== "string" ||
+    typeof payload.name !== "string" ||
+    typeof payload.balance !== "number" ||
+    typeof payload.avatar !== "string" ||
+    typeof payload.color !== "string"
+  ) {
+    throw new Error("Не удалось создать гостя: сервер вернул некорректные данные");
+  }
+  return payload as GuestAuthResponse;
+};
+
+export const bootstrapSession = async (apiBaseUrl: string): Promise<BootstrapSessionResult> => {
   const tgPlayer = buildTelegramPlayer();
   if (tgPlayer) {
     savePlayerToStorage(tgPlayer);
-    return tgPlayer;
+    return { player: tgPlayer, balance: null };
   }
 
   const local = loadPlayerFromStorage();
   if (local) {
-    return local;
+    return { player: local, balance: null };
   }
 
-  const response = await fetch(`${apiBaseUrl}/api/auth/guest`, {
-    method: "POST"
-  });
-  if (!response.ok) {
-    const fallback: SessionPlayer = {
-      id: `guest_${Math.random().toString(36).slice(2, 10)}`,
-      name: `Guest #${Math.floor(Math.random() * 900 + 100)}`,
-      avatar: randomFrom(avatars),
-      color: randomFrom(colors)
-    };
-    savePlayerToStorage(fallback);
-    return fallback;
-  }
-  const data = await response.json();
-  const player = data.player as SessionPlayer;
+  const guest = await createGuestPlayer(apiBaseUrl);
+  const player: SessionPlayer = {
+    id: guest.id,
+    name: guest.name,
+    avatar: guest.avatar,
+    color: guest.color
+  };
   savePlayerToStorage(player);
-  return player;
+  return { player, balance: guest.balance };
 };

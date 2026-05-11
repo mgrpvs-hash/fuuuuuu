@@ -5,8 +5,8 @@ export const API_URL = import.meta.env.VITE_API_URL || "http://localhost:3001";
 const withPlayerHeaders = (player: SessionPlayer): HeadersInit => ({
   "Content-Type": "application/json",
   "x-player-id": player.id,
-  "x-player-name": player.name,
-  "x-player-avatar": player.avatar,
+  "x-player-name": encodeURIComponent(player.name),
+  "x-player-avatar": encodeURIComponent(player.avatar),
   "x-player-color": player.color
 });
 
@@ -63,8 +63,10 @@ export const api = {
     const response = await fetch(`${API_URL}/api/leaderboard`);
     return readJson<{ wins: any[]; totalProfit: any[] }>(response);
   },
-  async profile(playerId: string) {
-    const response = await fetch(`${API_URL}/api/profile/${playerId}`);
+  async profile(player: SessionPlayer) {
+    const response = await fetch(`${API_URL}/api/profile/${player.id}`, {
+      headers: withPlayerHeaders(player)
+    });
     return readJson<ProfileResponse>(response);
   }
 };

@@ -9,8 +9,7 @@ import {
   Wallet,
   LogOut,
   PlayCircle,
-  Plus,
-  Coins
+  Plus
 } from "lucide-react";
 import type {
   BoardCellState,
@@ -164,19 +163,19 @@ const GamesPage = ({
   rooms,
   onJoin,
   onOpenCreate,
-  profile
+  balance
 }: {
   rooms: RoomSummary[];
   onJoin: (roomCode: string) => void;
   onOpenCreate: () => void;
-  profile: ProfileResponse | null;
+  balance: number;
 }) => (
   <div className="mx-auto w-full max-w-lg px-4 pb-24 pt-4">
     <div className="mb-4 rounded-2xl border border-border bg-panel p-4">
       <h1 className="text-xl font-bold text-gold">Monopoly TWA</h1>
       <p className="mt-2 flex items-center gap-2 text-sm text-slate-200">
         <Wallet size={16} />
-        Баланс: 🪙 {profile?.balance ?? "—"}
+        Баланс: 🪙 {balance}
       </p>
       <button onClick={onOpenCreate} className="mt-3 flex w-full items-center justify-center gap-2 rounded-xl bg-gold px-3 py-2 font-semibold text-black">
         <Plus size={16} />
@@ -743,6 +742,8 @@ const ResultsPage = ({ results, onBack }: { results: GameEndedPayload; onBack: (
 function App() {
   const [player, setPlayer] = useState<SessionPlayer | null>(null);
   const [profile, setProfile] = useState<ProfileResponse | null>(null);
+  const [sessionBalance, setSessionBalance] = useState<number | null>(null);
+  const [initError, setInitError] = useState<string | null>(null);
   const [rooms, setRooms] = useState<RoomSummary[]>([]);
   const [room, setRoom] = useState<RoomDetails | null>(null);
   const [game, setGame] = useState<GameState | null>(null);
@@ -760,9 +761,10 @@ function App() {
     setRooms(data.rooms);
   };
 
-  const refreshProfile = async (playerId: string) => {
-    const data = await api.profile(playerId);
+  const refreshProfile = async (identity: SessionPlayer) => {
+    const data = await api.profile(identity);
     setProfile(data);
+    setSessionBalance(data.balance);
   };
 
   const refreshLeaderboard = async () => {
@@ -778,36 +780,68 @@ function App() {
     }
   };
 
+  const setupSocketListeners = (socketClient: Socket) => {
+    socketClient.on("room:update", (nextRoom: RoomDetails) => {
+      setRoom(nextRoom);
+      setMainTab("games");
+    });
+    socketClient.on("game:start", () => {
+      setMainTab("games");
+    });
+    socketClient.on("game:update", (nextGame: GameState) => {
+      setGame(nextGame);
+      if (nextGame.status === "finished") {
+        setRoom(null);
+      }
+    });
+    socketClient.on("game:ended", (payload: GameEndedPayload) => {
+      setResults(payload);
+    });
+    socketClient.on("game:error", (message: string) => {
+      alert(message);
+    });
+  };
+
+  const ensureActivePlayer = async (): Promise<SessionPlayer> => {
+    if (player?.id) {
+      return player;
+    }
+
+    const initialized = await bootstrapSession(API_URL);
+    setPlayer(initialized.player);
+    if (typeof initialized.balance === "number") {
+      setSessionBalance(initialized.balance);
+    }
+    if (!socket) {
+      const socketClient = createSocket(initialized.player);
+      setupSocketListeners(socketClient);
+      setSocket(socketClient);
+    }
+    await refreshProfile(initialized.player);
+    return initialized.player;
+  };
+
   useEffect(() => {
     let socketClient: Socket | null = null;
 
-    withError(async () => {
-      const initialized = await bootstrapSession(API_URL);
-      setPlayer(initialized);
-      await Promise.all([refreshRooms(), refreshLeaderboard(), refreshProfile(initialized.id)]);
-      socketClient = createSocket(initialized);
-      setSocket(socketClient);
-
-      socketClient.on("room:update", (nextRoom: RoomDetails) => {
-        setRoom(nextRoom);
-        setMainTab("games");
-      });
-      socketClient.on("game:start", () => {
-        setMainTab("games");
-      });
-      socketClient.on("game:update", (nextGame: GameState) => {
-        setGame(nextGame);
-        if (nextGame.status === "finished") {
-          setRoom(null);
+    const initialize = async () => {
+      try {
+        setInitError(null);
+        const initialized = await bootstrapSession(API_URL);
+        setPlayer(initialized.player);
+        if (typeof initialized.balance === "number") {
+          setSessionBalance(initialized.balance);
         }
-      });
-      socketClient.on("game:ended", (payload: GameEndedPayload) => {
-        setResults(payload);
-      });
-      socketClient.on("game:error", (message: string) => {
-        alert(message);
-      });
-    });
+        await Promise.all([refreshRooms(), refreshLeaderboard(), refreshProfile(initialized.player)]);
+        socketClient = createSocket(initialized.player);
+        setupSocketListeners(socketClient);
+        setSocket(socketClient);
+      } catch (error) {
+        setInitError(error instanceof Error ? error.message : "Не удалось инициализировать игрока");
+      }
+    };
+
+    initialize().catch(() => undefined);
 
     return () => {
       socketClient?.disconnect();
@@ -819,36 +853,36 @@ function App() {
       refreshRooms().catch(() => undefined);
       refreshLeaderboard().catch(() => undefined);
       if (player) {
-        refreshProfile(player.id).catch(() => undefined);
+        refreshProfile(player).catch(() => undefined);
       }
     }, 3000);
 
     return () => clearInterval(interval);
   }, [player?.id]);
 
-  const connectToRoomSocket = (code: string) => {
-    socket?.emit("room:join", code, player);
+  const connectToRoomSocket = (code: string, identity: SessionPlayer) => {
+    socket?.emit("room:join", code, identity);
   };
 
   const handleCreateRoom = (entryFee: number, maxPlayers: number) => {
-    if (!player) return;
     withError(async () => {
-      const data = await api.createRoom(player, { entryFee, maxPlayers });
+      const activePlayer = await ensureActivePlayer();
+      const data = await api.createRoom(activePlayer, { entryFee, maxPlayers });
       setRoom(data.room);
       setCreateModal(false);
-      connectToRoomSocket(data.room.code);
-      await refreshProfile(player.id);
+      connectToRoomSocket(data.room.code, activePlayer);
+      await refreshProfile(activePlayer);
       await refreshRooms();
     });
   };
 
   const handleJoinRoom = (code: string) => {
-    if (!player) return;
     withError(async () => {
-      const data = await api.joinRoom(player, code);
+      const activePlayer = await ensureActivePlayer();
+      const data = await api.joinRoom(activePlayer, code);
       setRoom(data.room);
-      connectToRoomSocket(code);
-      await refreshProfile(player.id);
+      connectToRoomSocket(code, activePlayer);
+      await refreshProfile(activePlayer);
       await refreshRooms();
     });
   };
@@ -859,7 +893,7 @@ function App() {
       await api.leaveRoom(player, room.code);
       setRoom(null);
       setGame(null);
-      await refreshProfile(player.id);
+      await refreshProfile(player);
       await refreshRooms();
     });
   };
@@ -882,9 +916,23 @@ function App() {
     setRoom(null);
     setMainTab("games");
     if (player) {
-      refreshProfile(player.id).catch(() => undefined);
+      refreshProfile(player).catch(() => undefined);
     }
   };
+
+  if (initError) {
+    return (
+      <div className="flex min-h-screen items-center justify-center bg-appBg p-4 text-slate-200">
+        <div className="w-full max-w-md rounded-2xl border border-danger bg-panel p-4 text-center">
+          <p className="text-lg font-semibold text-danger">Ошибка guest режима</p>
+          <p className="mt-2 text-sm">{initError}</p>
+          <button onClick={() => window.location.reload()} className="mt-4 rounded-lg border border-border px-3 py-2">
+            Повторить
+          </button>
+        </div>
+      </div>
+    );
+  }
 
   if (!player) {
     return <div className="flex min-h-screen items-center justify-center text-sm text-slate-300">Загрузка сессии...</div>;
@@ -914,14 +962,14 @@ function App() {
         <LobbyPage room={room} me={player} onLeave={handleLeave} onStart={handleStart} />
       ) : (
         <>
-          {mainTab === "games" && <GamesPage rooms={rooms} onJoin={handleJoinRoom} onOpenCreate={() => setCreateModal(true)} profile={profile} />}
+          {mainTab === "games" && <GamesPage rooms={rooms} onJoin={handleJoinRoom} onOpenCreate={() => setCreateModal(true)} balance={profile?.balance ?? sessionBalance ?? 0} />}
           {mainTab === "leaderboard" && <LeaderboardPage data={leaderboard} />}
-          {mainTab === "profile" && <ProfilePage profile={profile} onReload={() => refreshProfile(player.id)} />}
+          {mainTab === "profile" && <ProfilePage profile={profile} onReload={() => refreshProfile(player)} />}
           <BottomMenu tab={mainTab} onChange={setMainTab} />
         </>
       )}
 
-      <CreateRoomModal isOpen={createModal} onClose={() => setCreateModal(false)} onCreate={handleCreateRoom} balance={profile?.balance ?? 0} />
+      <CreateRoomModal isOpen={createModal} onClose={() => setCreateModal(false)} onCreate={handleCreateRoom} balance={profile?.balance ?? sessionBalance ?? 0} />
       {results && <ResultsPage results={results} onBack={onBackToGames} />}
     </div>
   );
