@@ -1,3 +1,3 @@
-export * from "./types";
-export * from "./board";
-export * from "./cards";
+export * from "./types.js";
+export * from "./board.js";
+export * from "./cards.js";

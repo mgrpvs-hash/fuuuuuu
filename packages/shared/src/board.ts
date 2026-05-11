@@ -1,4 +1,4 @@
-import { BoardCell } from "./types";
+import { BoardCell } from "./types.js";
 
 export const BASE_ENTRY_FEE = 1000;
 export const START_BONUS = 220;

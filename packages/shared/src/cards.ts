@@ -1,4 +1,4 @@
-import { CardCategory } from "./types";
+import { CardCategory } from "./types.js";
 
 export type CardEffectType =
   | "money"
