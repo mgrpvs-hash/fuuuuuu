@@ -71,3 +71,15 @@ CREATE TABLE IF NOT EXISTS settings (
   UNIQUE(user_id, key),
   FOREIGN KEY (user_id) REFERENCES users(id)
 );
+
+CREATE INDEX IF NOT EXISTS idx_generated_contents_user_created
+  ON generated_contents(user_id, created_at DESC);
+
+CREATE INDEX IF NOT EXISTS idx_generated_contents_status
+  ON generated_contents(status);
+
+CREATE INDEX IF NOT EXISTS idx_scheduled_posts_status_scheduled_at
+  ON scheduled_posts(job_status, scheduled_at);
+
+CREATE INDEX IF NOT EXISTS idx_publish_logs_generated_content
+  ON publish_logs(generated_content_id, created_at DESC);

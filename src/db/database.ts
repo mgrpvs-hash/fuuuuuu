@@ -2,7 +2,9 @@ import Database from "better-sqlite3";
 import fs from "node:fs";
 import path from "node:path";
 
-import { Language, ContentType, DraftStatus, MediaType } from "../types/domain.js";
+import { env } from "../config/env.js";
+import { ContentType, DraftStatus, Language, MediaType } from "../types/domain.js";
+import { AppError } from "../types/errors.js";
 import { ensureDir } from "../utils/fs.js";
 
 export interface DbGeneratedContent {
@@ -41,6 +43,7 @@ export class AppDatabase {
     this.db = new Database(dbPath);
     this.db.pragma("journal_mode = WAL");
     this.db.pragma("foreign_keys = ON");
+    this.db.pragma("busy_timeout = 5000");
   }
 
   static async init(dbPath: string): Promise<AppDatabase> {
@@ -54,19 +57,11 @@ export class AppDatabase {
   }
 
   getOrCreateUser(telegramUserId: number): { id: number; tone: string; language: Language } {
-    const existing = this.db
-      .prepare("SELECT id, tone, language FROM users WHERE telegram_user_id = ?")
-      .get(telegramUserId) as { id: number; tone: string; language: Language } | undefined;
-
-    if (existing) {
-      return existing;
-    }
-
     this.db
       .prepare(
-        "INSERT INTO users (telegram_user_id, tone, language, created_at, updated_at) VALUES (?, 'professional', 'ru', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)"
+        "INSERT OR IGNORE INTO users (telegram_user_id, tone, language, created_at, updated_at) VALUES (?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)"
       )
-      .run(telegramUserId);
+      .run(telegramUserId, env.DEFAULT_TONE, env.DEFAULT_LANGUAGE);
 
     return this.db
       .prepare("SELECT id, tone, language FROM users WHERE telegram_user_id = ?")
@@ -119,7 +114,6 @@ export class AppDatabase {
         "INSERT INTO media_items (user_id, telegram_file_id, media_type, local_path, created_at) VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)"
       )
       .run(user.id, input.telegramFileId, input.mediaType, input.localPath);
-
     return Number(result.lastInsertRowid);
   }
 
@@ -173,13 +167,18 @@ export class AppDatabase {
       .get(id) as DbGeneratedContent | undefined;
   }
 
-  getLatestDraftByTelegramUserId(telegramUserId: number): DbGeneratedContent | undefined {
+  getGeneratedContentByIdForTelegramUser(contentId: number, telegramUserId: number): DbGeneratedContent {
     const user = this.getOrCreateUser(telegramUserId);
-    return this.db
-      .prepare(
-        "SELECT * FROM generated_contents WHERE user_id = ? ORDER BY datetime(created_at) DESC, id DESC LIMIT 1"
-      )
-      .get(user.id) as DbGeneratedContent | undefined;
+    const row = this.db
+      .prepare("SELECT * FROM generated_contents WHERE id = ? AND user_id = ?")
+      .get(contentId, user.id) as DbGeneratedContent | undefined;
+    if (!row) {
+      throw new AppError("Draft not found for current user", {
+        code: "NOT_FOUND",
+        statusCode: 404
+      });
+    }
+    return row;
   }
 
   selectCaption(contentId: number, caption: string): void {
@@ -200,23 +199,27 @@ export class AppDatabase {
         "INSERT INTO scheduled_posts (generated_content_id, scheduled_at, job_status, created_at, updated_at) VALUES (?, ?, 'scheduled', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)"
       )
       .run(contentId, scheduledAtIso);
-
     this.updateGeneratedStatus(contentId, "scheduled");
     return Number(result.lastInsertRowid);
   }
 
   listDueSchedules(nowIso: string): Array<{ scheduleId: number; generatedContentId: number }> {
-    const rows = this.db
+    return this.db
       .prepare(
         `SELECT sp.id AS scheduleId, sp.generated_content_id AS generatedContentId
          FROM scheduled_posts sp
-         WHERE sp.job_status = 'scheduled' AND datetime(sp.scheduled_at) <= datetime(?)`
+         JOIN generated_contents gc ON gc.id = sp.generated_content_id
+         WHERE sp.job_status = 'scheduled'
+           AND gc.status IN ('approved', 'scheduled')
+           AND datetime(sp.scheduled_at) <= datetime(?)`
       )
       .all(nowIso) as Array<{ scheduleId: number; generatedContentId: number }>;
-    return rows;
   }
 
-  updateScheduleStatus(scheduleId: number, status: "scheduled" | "running" | "published" | "failed" | "cancelled"): void {
+  updateScheduleStatus(
+    scheduleId: number,
+    status: "scheduled" | "running" | "published" | "failed" | "cancelled"
+  ): void {
     this.db
       .prepare("UPDATE scheduled_posts SET job_status = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?")
       .run(status, scheduleId);
@@ -254,26 +257,40 @@ export class AppDatabase {
       .run(contentId);
   }
 
-  listDrafts(telegramUserId: number): Array<{ id: number; status: DraftStatus; content_type: ContentType; created_at: string }> {
+  listDrafts(
+    telegramUserId: number
+  ): Array<{ id: number; status: DraftStatus; content_type: ContentType; created_at: string }> {
     const user = this.getOrCreateUser(telegramUserId);
     return this.db
       .prepare(
         "SELECT id, status, content_type, created_at FROM generated_contents WHERE user_id = ? ORDER BY datetime(created_at) DESC LIMIT 10"
       )
-      .all(user.id) as Array<{ id: number; status: DraftStatus; content_type: ContentType; created_at: string }>;
+      .all(user.id) as Array<{
+      id: number;
+      status: DraftStatus;
+      content_type: ContentType;
+      created_at: string;
+    }>;
   }
 
-  listScheduled(telegramUserId: number): Array<{ id: number; scheduled_at: string; job_status: string }> {
+  listScheduled(
+    telegramUserId: number
+  ): Array<{ id: number; scheduled_at: string; job_status: string; generated_content_id: number }> {
     const user = this.getOrCreateUser(telegramUserId);
     return this.db
       .prepare(
-        `SELECT sp.id, sp.scheduled_at, sp.job_status
+        `SELECT sp.id, sp.scheduled_at, sp.job_status, sp.generated_content_id
          FROM scheduled_posts sp
          JOIN generated_contents gc ON gc.id = sp.generated_content_id
          WHERE gc.user_id = ?
          ORDER BY datetime(sp.scheduled_at) ASC
          LIMIT 10`
       )
-      .all(user.id) as Array<{ id: number; scheduled_at: string; job_status: string }>;
+      .all(user.id) as Array<{
+      id: number;
+      scheduled_at: string;
+      job_status: string;
+      generated_content_id: number;
+    }>;
   }
 }
