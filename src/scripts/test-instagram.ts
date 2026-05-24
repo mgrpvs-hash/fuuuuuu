@@ -1,6 +1,36 @@
-import { env } from "../config/env.js";
+import fs from "node:fs/promises";
+import path from "node:path";
 
-async function graphGet(endpoint: string): Promise<Record<string, unknown>> {
+import dotenv from "dotenv";
+
+type InstagramEnv = {
+  INSTAGRAM_GRAPH_API_BASE: string;
+  INSTAGRAM_ACCESS_TOKEN: string;
+  INSTAGRAM_BUSINESS_ACCOUNT_ID: string;
+  FACEBOOK_PAGE_ID?: string;
+};
+
+async function loadEnv(): Promise<InstagramEnv> {
+  const envPath = path.resolve(process.cwd(), ".env");
+  const raw = await fs.readFile(envPath, "utf-8");
+  const parsed = dotenv.parse(raw);
+
+  const required = ["INSTAGRAM_ACCESS_TOKEN", "INSTAGRAM_BUSINESS_ACCOUNT_ID"] as const;
+  for (const key of required) {
+    if (!parsed[key]?.trim()) {
+      throw new Error(`Missing required env key for instagram test: ${key}`);
+    }
+  }
+
+  return {
+    INSTAGRAM_GRAPH_API_BASE: parsed.INSTAGRAM_GRAPH_API_BASE || "https://graph.facebook.com/v20.0",
+    INSTAGRAM_ACCESS_TOKEN: parsed.INSTAGRAM_ACCESS_TOKEN,
+    INSTAGRAM_BUSINESS_ACCOUNT_ID: parsed.INSTAGRAM_BUSINESS_ACCOUNT_ID,
+    FACEBOOK_PAGE_ID: parsed.FACEBOOK_PAGE_ID
+  };
+}
+
+async function graphGet(env: InstagramEnv, endpoint: string): Promise<Record<string, unknown>> {
   const url = new URL(`${env.INSTAGRAM_GRAPH_API_BASE}${endpoint}`);
   url.searchParams.set("access_token", env.INSTAGRAM_ACCESS_TOKEN);
   const response = await fetch(url.toString());
@@ -12,7 +42,11 @@ async function graphGet(endpoint: string): Promise<Record<string, unknown>> {
 }
 
 async function main(): Promise<void> {
-  const accountInfo = await graphGet(`/${env.INSTAGRAM_BUSINESS_ACCOUNT_ID}?fields=id,username`);
+  const env = await loadEnv();
+  const accountInfo = await graphGet(
+    env,
+    `/${env.INSTAGRAM_BUSINESS_ACCOUNT_ID}?fields=id,username`
+  );
   const accountId = String(accountInfo.id ?? "");
   const username = String(accountInfo.username ?? "");
   if (!accountId) {
@@ -20,18 +54,19 @@ async function main(): Promise<void> {
   }
   console.log(`Instagram account check OK: id=${accountId}, username=${username || "(empty)"}`);
 
-  const accounts = await graphGet("/me/accounts");
+  const accounts = await graphGet(env, "/me/accounts");
   const pages = Array.isArray(accounts.data) ? (accounts.data as Array<Record<string, unknown>>) : [];
   if (!pages.length) {
     throw new Error("No pages found in /me/accounts");
   }
 
   const pageIds = pages.map((page) => String(page.id ?? "")).filter(Boolean);
-  const expectedPageId = env.FACEBOOK_PAGE_ID;
-  if (expectedPageId && !pageIds.includes(expectedPageId)) {
-    console.warn(`Warning: FACEBOOK_PAGE_ID mismatch. Configured=${expectedPageId}. Available=${pageIds.join(", ")}`);
-  } else if (expectedPageId) {
-    console.log(`Facebook page check OK: ${expectedPageId}`);
+  if (env.FACEBOOK_PAGE_ID && !pageIds.includes(env.FACEBOOK_PAGE_ID)) {
+    console.warn(
+      `Warning: FACEBOOK_PAGE_ID mismatch. Configured=${env.FACEBOOK_PAGE_ID}. Available=${pageIds.join(", ")}`
+    );
+  } else if (env.FACEBOOK_PAGE_ID) {
+    console.log(`Facebook page check OK: ${env.FACEBOOK_PAGE_ID}`);
   } else {
     console.log(`Facebook pages available: ${pageIds.join(", ")}`);
   }

@@ -4,8 +4,35 @@ import os from "node:os";
 import path from "node:path";
 
 import { createClient } from "@supabase/supabase-js";
+import dotenv from "dotenv";
 
-import { env } from "../config/env.js";
+type StorageEnv = {
+  MEDIA_STORAGE_PROVIDER: string;
+  SUPABASE_URL: string;
+  SUPABASE_SECRET_KEY: string;
+  SUPABASE_STORAGE_BUCKET: string;
+  SUPABASE_PUBLIC_FOLDER: string;
+};
+
+async function loadEnv(): Promise<StorageEnv> {
+  const envPath = path.resolve(process.cwd(), ".env");
+  const raw = await fs.readFile(envPath, "utf-8");
+  const parsed = dotenv.parse(raw);
+
+  const required = [
+    "MEDIA_STORAGE_PROVIDER",
+    "SUPABASE_URL",
+    "SUPABASE_SECRET_KEY",
+    "SUPABASE_STORAGE_BUCKET",
+    "SUPABASE_PUBLIC_FOLDER"
+  ] as const;
+  for (const key of required) {
+    if (!parsed[key]?.trim()) {
+      throw new Error(`Missing required env key for storage test: ${key}`);
+    }
+  }
+  return parsed as StorageEnv;
+}
 
 async function fetchWithRetry(url: string, attempts: number): Promise<Response> {
   let lastError: unknown;
@@ -25,11 +52,9 @@ async function fetchWithRetry(url: string, attempts: number): Promise<Response> 
 }
 
 async function main(): Promise<void> {
+  const env = await loadEnv();
   if (env.MEDIA_STORAGE_PROVIDER !== "supabase") {
     throw new Error("MEDIA_STORAGE_PROVIDER must be supabase for test:storage");
-  }
-  if (!env.SUPABASE_URL || !env.SUPABASE_SECRET_KEY || !env.SUPABASE_STORAGE_BUCKET) {
-    throw new Error("Supabase environment is not fully configured");
   }
 
   const supabase = createClient(env.SUPABASE_URL, env.SUPABASE_SECRET_KEY, {
@@ -73,7 +98,7 @@ async function main(): Promise<void> {
 
     console.log("Supabase storage test passed.");
     console.log(`Uploaded path: ${storagePath}`);
-    console.log(`Public URL reachable: yes`);
+    console.log("Public URL reachable: yes");
 
     const remove = await supabase.storage
       .from(env.SUPABASE_STORAGE_BUCKET)
