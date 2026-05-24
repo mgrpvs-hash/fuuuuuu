@@ -8,12 +8,14 @@ import { OpenAiService } from "./services/openai.service.js";
 import { RateLimitService } from "./services/rate-limit.service.js";
 import { SafetyService } from "./services/safety.service.js";
 import { SchedulerService } from "./services/scheduler.service.js";
+import { StorageService } from "./services/storage.service.js";
 import { logger } from "./utils/logger.js";
 
 async function bootstrap(): Promise<void> {
   const db = await AppDatabase.init(env.DATABASE_URL);
   const safetyService = new SafetyService();
   const mediaValidationService = new MediaValidationService();
+  const storageService = new StorageService();
   const aiService = new OpenAiService();
   const instagramService = new InstagramService();
   const workflowService = new ContentWorkflowService(
@@ -33,13 +35,14 @@ async function bootstrap(): Promise<void> {
     safetyService,
     workflowService,
     mediaValidationService,
+    storageService,
     rateLimitService
   });
 
   const scheduler = new SchedulerService(db, workflowService);
   scheduler.start();
 
-  if (env.TELEGRAM_BOT_MODE === "webhook") {
+  if (env.TELEGRAM_MODE === "webhook") {
     await bot.launch({
       webhook: {
         domain: env.TELEGRAM_WEBHOOK_DOMAIN!,
@@ -50,8 +53,7 @@ async function bootstrap(): Promise<void> {
     });
     logger.info("Telegram bot launched in webhook mode", {
       domain: env.TELEGRAM_WEBHOOK_DOMAIN,
-      hookPath: env.TELEGRAM_WEBHOOK_PATH,
-      port: env.PORT
+      hookPath: env.TELEGRAM_WEBHOOK_PATH
     });
   } else {
     await bot.launch();

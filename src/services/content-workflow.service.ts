@@ -70,12 +70,12 @@ export class ContentWorkflowService {
       const withDisclaimer = this.safetyService.ensureMedicalDisclaimer(baseCaption, draft.language);
       this.safetyService.assertSafeForPublishing(withDisclaimer);
 
+      const mediaPathOrUrl = media.storage_url ?? media.local_path;
       const result = await this.instagramService.publish({
         contentType: draft.content_type,
         mediaType: media.media_type,
-        mediaPath: media.local_path,
+        mediaPathOrUrl,
         caption: withDisclaimer,
-        storyText: draft.story_text,
         hashtags
       });
 
@@ -102,7 +102,7 @@ export class ContentWorkflowService {
         igMediaId: result.igMediaId,
         igContainerId: result.igContainerId
       });
-      return { success: true, message: "Published to Instagram successfully" };
+      return { success: true, message: "Published successfully" };
     } catch (error) {
       const appError =
         error instanceof AppError
@@ -122,8 +122,7 @@ export class ContentWorkflowService {
       this.workflowLogger.error("Workflow publish failed", {
         contentId: draft.id,
         code: appError.code,
-        message: appError.message,
-        details: appError.details
+        message: appError.message
       });
       return { success: false, message: appError.message };
     }

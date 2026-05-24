@@ -13,7 +13,19 @@ const LOG_ORDER: Record<LogLevel, number> = {
   trace: 10
 };
 
-const redactKeys = new Set(["access_token", "token", "authorization", "apiKey", "openai_api_key"]);
+const redactKeys = new Set([
+  "access_token",
+  "token",
+  "authorization",
+  "apikey",
+  "api_key",
+  "openai_api_key",
+  "telegram_bot_token",
+  "instagram_access_token",
+  "meta_app_secret",
+  "supabase_secret_key",
+  "supabase_publishable_key"
+]);
 
 function shouldLog(level: LogLevel): boolean {
   return LOG_ORDER[level] >= LOG_ORDER[env.LOG_LEVEL];

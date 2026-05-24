@@ -21,10 +21,34 @@ function isTransientHttpCode(statusCode: number): boolean {
 }
 
 function shouldRetryError(error: unknown): boolean {
-  if (!(error instanceof AppError)) {
-    return false;
+  return error instanceof AppError && error.code === "TRANSIENT_EXTERNAL_ERROR";
+}
+
+function classifyInstagramError(input: {
+  message: string;
+  statusCode: number;
+  errorCode?: number;
+}): string {
+  const normalized = input.message.toLowerCase();
+  if (normalized.includes("invalid oauth") || normalized.includes("access token")) {
+    return "invalid token";
   }
-  return error.code === "TRANSIENT_EXTERNAL_ERROR";
+  if (normalized.includes("permission") || normalized.includes("insufficient")) {
+    return "missing permission";
+  }
+  if (normalized.includes("url") && (normalized.includes("not reachable") || normalized.includes("cannot"))) {
+    return "media URL not accessible";
+  }
+  if (normalized.includes("unsupported") || normalized.includes("format")) {
+    return "unsupported media type";
+  }
+  if (normalized.includes("container") && (normalized.includes("not ready") || normalized.includes("processing"))) {
+    return "container not ready";
+  }
+  if (input.statusCode === 429 || input.statusCode >= 500) {
+    return "Meta API transient error";
+  }
+  return "Meta API error";
 }
 
 export class InstagramService {
@@ -39,14 +63,17 @@ export class InstagramService {
     this.token = env.INSTAGRAM_ACCESS_TOKEN;
   }
 
-  private toPublicMediaUrl(localPath: string): string {
-    if (!env.MEDIA_PUBLIC_BASE_URL) {
-      throw new AppError(
-        "MEDIA_PUBLIC_BASE_URL is not configured. Instagram Graph API needs publicly accessible media URLs.",
-        { code: "VALIDATION_ERROR", statusCode: 400 }
-      );
+  private toPublicMediaUrl(pathOrUrl: string): string {
+    if (/^https?:\/\//i.test(pathOrUrl)) {
+      return pathOrUrl;
     }
-    const filename = path.basename(localPath);
+    if (!env.MEDIA_PUBLIC_BASE_URL) {
+      throw new AppError("MEDIA_PUBLIC_BASE_URL is not configured for local media URLs", {
+        code: "VALIDATION_ERROR",
+        statusCode: 400
+      });
+    }
+    const filename = path.basename(pathOrUrl);
     return `${env.MEDIA_PUBLIC_BASE_URL.replace(/\/$/, "")}/${filename}`;
   }
 
@@ -82,8 +109,7 @@ export class InstagramService {
 
       const payload = (await response.json()) as Record<string, unknown> & GraphApiErrorPayload;
       if (!response.ok) {
-        const apiError = payload.error;
-        const message = apiError?.message ?? `Instagram API request failed (${response.status})`;
+        const message = payload.error?.message ?? `Instagram API request failed (${response.status})`;
         throw new AppError(message, {
           code: isTransientHttpCode(response.status)
             ? "TRANSIENT_EXTERNAL_ERROR"
@@ -91,26 +117,27 @@ export class InstagramService {
           statusCode: response.status,
           details: {
             endpoint: options.endpoint,
-            errorType: apiError?.type,
-            errorCode: apiError?.code,
-            errorSubcode: apiError?.error_subcode,
-            traceId: apiError?.fbtrace_id
+            errorCode: payload.error?.code,
+            errorSubcode: payload.error?.error_subcode,
+            errorType: payload.error?.type,
+            traceId: payload.error?.fbtrace_id
           }
         });
       }
+
       return payload;
     } catch (error) {
       if (error instanceof AppError) {
         throw error;
       }
       if (error instanceof Error && error.name === "AbortError") {
-        throw new AppError("Instagram API request timeout", {
+        throw new AppError("Meta API transient error: timeout", {
           code: "TRANSIENT_EXTERNAL_ERROR",
           statusCode: 504,
           cause: error
         });
       }
-      throw new AppError("Instagram API network failure", {
+      throw new AppError("Meta API transient error: network", {
         code: "TRANSIENT_EXTERNAL_ERROR",
         statusCode: 502,
         cause: error
@@ -150,16 +177,14 @@ export class InstagramService {
   }
 
   private async waitForContainerReady(containerId: string): Promise<void> {
-    let terminalStatus = "";
     for (let attempt = 0; attempt < 10; attempt += 1) {
       const statusData = await this.graphGet(`/${containerId}?fields=status_code,status`);
       const statusCode = String(statusData.status_code ?? "");
-      terminalStatus = statusCode;
       if (statusCode === "FINISHED") {
         return;
       }
       if (statusCode === "ERROR" || statusCode === "EXPIRED") {
-        throw new AppError("Instagram container processing failed", {
+        throw new AppError("container not ready", {
           code: "EXTERNAL_SERVICE_ERROR",
           statusCode: 502,
           details: { containerId, statusData }
@@ -168,28 +193,27 @@ export class InstagramService {
       await new Promise((resolve) => setTimeout(resolve, 2500));
     }
 
-    throw new AppError("Instagram container processing timeout", {
+    throw new AppError("container not ready", {
       code: "TRANSIENT_EXTERNAL_ERROR",
       statusCode: 504,
-      details: { containerId, terminalStatus }
+      details: { containerId }
     });
   }
 
   async publish(input: {
     contentType: ContentType;
     mediaType: MediaType;
-    mediaPath: string;
+    mediaPathOrUrl: string;
     caption: string;
-    storyText: string;
     hashtags: string[];
   }): Promise<PublishResult> {
     try {
-      const mediaUrl = this.toPublicMediaUrl(input.mediaPath);
+      const mediaUrl = this.toPublicMediaUrl(input.mediaPathOrUrl);
       const normalizedCaption = `${input.caption}\n\n${input.hashtags.join(" ")}`.trim();
 
       if (input.contentType === "post") {
         if (input.mediaType !== "image") {
-          throw new AppError("Post publishing currently supports image only", {
+          throw new AppError("unsupported media type", {
             code: "VALIDATION_ERROR",
             statusCode: 400
           });
@@ -205,7 +229,7 @@ export class InstagramService {
 
       if (input.contentType === "reel") {
         if (input.mediaType !== "video") {
-          throw new AppError("Reel publishing requires video media", {
+          throw new AppError("unsupported media type", {
             code: "VALIDATION_ERROR",
             statusCode: 400
           });
@@ -225,7 +249,6 @@ export class InstagramService {
         input.mediaType === "video"
           ? { media_type: "STORIES", video_url: mediaUrl }
           : { media_type: "STORIES", image_url: mediaUrl };
-
       const create = await this.graphPost(`/${this.accountId}/media`, storyParams);
       const containerId = String(create.id);
       if (input.mediaType === "video") {
@@ -237,22 +260,30 @@ export class InstagramService {
       const appError =
         error instanceof AppError
           ? error
-          : new AppError("Unknown Instagram publishing error", {
+          : new AppError("Meta API error", {
               code: "EXTERNAL_SERVICE_ERROR",
               statusCode: 500,
               cause: error
             });
 
+      const errorCode = typeof appError.details?.errorCode === "number" ? appError.details.errorCode : undefined;
+      const friendly = classifyInstagramError({
+        message: appError.message,
+        statusCode: appError.statusCode,
+        errorCode
+      });
+      const summary = `${friendly}: ${appError.message}`;
+
       this.serviceLogger.error("Instagram publish failed", {
         code: appError.code,
         statusCode: appError.statusCode,
-        message: appError.message,
-        details: appError.details
+        errorCode,
+        message: summary
       });
 
       return {
         success: false,
-        error: appError.message
+        error: summary
       };
     }
   }

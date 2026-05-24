@@ -10,6 +10,7 @@ import { MediaValidationService } from "../services/media-validation.service.js"
 import { OpenAiService } from "../services/openai.service.js";
 import { RateLimitService } from "../services/rate-limit.service.js";
 import { SafetyService } from "../services/safety.service.js";
+import { StorageService } from "../services/storage.service.js";
 import { ContentType, Language, MediaType } from "../types/domain.js";
 import { AppError, toAppError } from "../types/errors.js";
 import { ensureDir } from "../utils/fs.js";
@@ -36,14 +37,8 @@ function getChatId(ctx: Context): number | null {
 
 function buildActionKeyboard(contentId: number) {
   return Markup.inlineKeyboard([
-    [
-      Markup.button.callback("Approve now", `approve:${contentId}`),
-      Markup.button.callback("Regenerate", `regenerate:${contentId}`)
-    ],
-    [
-      Markup.button.callback("Schedule", `schedule:${contentId}`),
-      Markup.button.callback("Cancel", `cancel:${contentId}`)
-    ]
+    [Markup.button.callback("Approve", `approve:${contentId}`), Markup.button.callback("Regenerate", `regenerate:${contentId}`)],
+    [Markup.button.callback("Schedule", `schedule:${contentId}`), Markup.button.callback("Cancel", `cancel:${contentId}`)]
   ]);
 }
 
@@ -92,15 +87,31 @@ function parseActionContentId(raw: string): number {
   return parsed;
 }
 
+function userAllowed(userId: number): boolean {
+  if (!env.TELEGRAM_ALLOWED_USER_IDS_LIST.length) {
+    return true;
+  }
+  return env.TELEGRAM_ALLOWED_USER_IDS_LIST.includes(userId);
+}
+
 export function createTelegramBot(input: {
   db: AppDatabase;
   aiService: OpenAiService;
   safetyService: SafetyService;
   workflowService: ContentWorkflowService;
   mediaValidationService: MediaValidationService;
+  storageService: StorageService;
   rateLimitService: RateLimitService;
 }): Telegraf {
-  const { db, aiService, safetyService, workflowService, mediaValidationService, rateLimitService } = input;
+  const {
+    db,
+    aiService,
+    safetyService,
+    workflowService,
+    mediaValidationService,
+    storageService,
+    rateLimitService
+  } = input;
   const bot = new Telegraf(env.TELEGRAM_BOT_TOKEN);
   const draftSessions = new Map<number, DraftSession>();
 
@@ -109,6 +120,12 @@ export function createTelegramBot(input: {
     if (!userId) {
       return next();
     }
+
+    if (!userAllowed(userId)) {
+      await safeReply(ctx, "Access denied for this bot.");
+      return;
+    }
+
     const correlationId = logger.newCorrelationId();
     try {
       rateLimitService.check(`tg:${userId}`);
@@ -145,7 +162,7 @@ export function createTelegramBot(input: {
         "1) Отправьте фото или видео",
         "2) Добавьте описание",
         "3) Выберите тип контента и язык",
-        "4) Подтвердите публикацию (human approval обязателен)"
+        "4) Подтвердите публикацию вручную (human approval)"
       ].join("\n")
     );
   });
@@ -155,6 +172,8 @@ export function createTelegramBot(input: {
       [
         "/start - начать",
         "/help - помощь",
+        "/health - статус интеграций",
+        "/whoami - информация о пользователе",
         "/settings - текущие настройки",
         "/set_tone <tone> - установить тон коммуникации",
         "/set_language <ru|en> - язык контента",
@@ -165,12 +184,39 @@ export function createTelegramBot(input: {
     );
   });
 
+  bot.command("health", async (ctx) => {
+    const lines = [
+      "Health status:",
+      "- Telegram OK",
+      `- OpenAI configured: ${env.OPENAI_API_KEY ? "yes" : "no"}`,
+      `- Instagram configured: ${env.INSTAGRAM_ACCESS_TOKEN && env.INSTAGRAM_BUSINESS_ACCOUNT_ID ? "yes" : "no"}`,
+      `- Supabase configured: ${
+        env.MEDIA_STORAGE_PROVIDER === "supabase" &&
+        env.SUPABASE_URL &&
+        env.SUPABASE_SECRET_KEY &&
+        env.SUPABASE_STORAGE_BUCKET
+          ? "yes"
+          : "no"
+      }`
+    ];
+    await ctx.reply(lines.join("\n"));
+  });
+
+  bot.command("whoami", async (ctx) => {
+    const userId = getUserId(ctx);
+    const username = ctx.from?.username ? `@${ctx.from.username}` : "(no username)";
+    if (!userId) return;
+    await ctx.reply(
+      `Telegram user id: ${userId}\nUsername: ${username}\nAllowed: ${userAllowed(userId) ? "yes" : "no"}`
+    );
+  });
+
   bot.command("settings", async (ctx) => {
     const userId = getUserId(ctx);
     if (!userId) return;
     const user = db.getUserByTelegramId(userId);
     await ctx.reply(
-      `Tone: ${user.tone}\nLanguage: ${user.language}\nInstagram account id: ${user.instagram_account_id ?? "(env default)"}`
+      `Tone: ${user.tone}\nLanguage: ${user.language}\nInstagram account id: ${user.instagram_account_id ?? env.INSTAGRAM_BUSINESS_ACCOUNT_ID}`
     );
   });
 
@@ -255,15 +301,21 @@ export function createTelegramBot(input: {
       const fileId = photo.file_id;
       const localPath = await downloadTelegramFile(bot, fileId, "image");
       await mediaValidationService.validateStoredFile(localPath, "image");
+      const uploaded = await storageService.uploadMediaFromLocal({
+        localPath,
+        mediaType: "image"
+      });
+
       const mediaItemId = db.createMediaItem({
         telegramUserId: userId,
         telegramFileId: fileId,
         mediaType: "image",
-        localPath
+        localPath,
+        storageUrl: uploaded.publicUrl
       });
 
       draftSessions.set(userId, { mediaItemId, mediaType: "image", description: ctx.message.caption });
-      await ctx.reply("Фото получено. Отправьте текстовое описание для поста.");
+      await ctx.reply("Фото получено и загружено в storage. Отправьте текстовое описание для поста.");
     } catch (error) {
       const appError = toAppError(error, "Photo processing failed");
       botLogger.warn("Photo intake failed", { userId, message: appError.message });
@@ -288,16 +340,21 @@ export function createTelegramBot(input: {
       const fileId = video.file_id;
       const localPath = await downloadTelegramFile(bot, fileId, "video");
       await mediaValidationService.validateStoredFile(localPath, "video");
+      const uploaded = await storageService.uploadMediaFromLocal({
+        localPath,
+        mediaType: "video"
+      });
 
       const mediaItemId = db.createMediaItem({
         telegramUserId: userId,
         telegramFileId: fileId,
         mediaType: "video",
-        localPath
+        localPath,
+        storageUrl: uploaded.publicUrl
       });
 
       draftSessions.set(userId, { mediaItemId, mediaType: "video", description: ctx.message.caption });
-      await ctx.reply("Видео получено. Отправьте текстовое описание для контента.");
+      await ctx.reply("Видео получено и загружено в storage. Отправьте текстовое описание для контента.");
     } catch (error) {
       const appError = toAppError(error, "Video processing failed");
       botLogger.warn("Video intake failed", { userId, message: appError.message });
@@ -439,8 +496,8 @@ export function createTelegramBot(input: {
       const appError = toAppError(error, "Generation failed");
       botLogger.error("Generation failed", {
         userId,
-        message: appError.message,
-        code: appError.code
+        code: appError.code,
+        message: appError.message
       });
       await ctx.reply(`Ошибка генерации: ${appError.message}`);
     }
@@ -456,7 +513,7 @@ export function createTelegramBot(input: {
       db.getGeneratedContentByIdForTelegramUser(contentId, userId);
       workflowService.approveDraft(contentId);
       const result = await workflowService.publishDraftNow(contentId);
-      await ctx.reply(result.success ? "Опубликовано в Instagram." : `Ошибка публикации: ${result.message}`);
+      await ctx.reply(result.success ? "Published successfully" : `Ошибка публикации: ${result.message}`);
     } catch (error) {
       const appError = toAppError(error, "Approve/publish failed");
       await ctx.reply(`Ошибка approve: ${appError.message}`);
@@ -573,9 +630,7 @@ export function createTelegramBot(input: {
     const appError = toAppError(error, "Unhandled Telegram error");
     botLogger.error("Telegram bot uncaught error", {
       code: appError.code,
-      statusCode: appError.statusCode,
-      message: appError.message,
-      details: appError.details
+      message: appError.message
     });
     await safeReply(ctx, "Внутренняя ошибка. Попробуйте снова позже.");
   });

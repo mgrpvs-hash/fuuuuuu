@@ -33,6 +33,7 @@ export interface DbMediaItem {
   telegram_file_id: string;
   media_type: MediaType;
   local_path: string;
+  storage_url: string | null;
   created_at: string;
 }
 
@@ -53,7 +54,18 @@ export class AppDatabase {
     const schemaPath = path.resolve(process.cwd(), "src/db/schema.sql");
     const schema = fs.readFileSync(schemaPath, "utf-8");
     instance.db.exec(schema);
+    instance.ensureMigrations();
     return instance;
+  }
+
+  private ensureMigrations(): void {
+    const mediaColumns = this.db.prepare("PRAGMA table_info(media_items)").all() as Array<{
+      name: string;
+    }>;
+    const hasStorageUrl = mediaColumns.some((column) => column.name === "storage_url");
+    if (!hasStorageUrl) {
+      this.db.exec("ALTER TABLE media_items ADD COLUMN storage_url TEXT");
+    }
   }
 
   getOrCreateUser(telegramUserId: number): { id: number; tone: string; language: Language } {
@@ -107,13 +119,14 @@ export class AppDatabase {
     telegramFileId: string;
     mediaType: MediaType;
     localPath: string;
+    storageUrl?: string;
   }): number {
     const user = this.getOrCreateUser(input.telegramUserId);
     const result = this.db
       .prepare(
-        "INSERT INTO media_items (user_id, telegram_file_id, media_type, local_path, created_at) VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)"
+        "INSERT INTO media_items (user_id, telegram_file_id, media_type, local_path, storage_url, created_at) VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)"
       )
-      .run(user.id, input.telegramFileId, input.mediaType, input.localPath);
+      .run(user.id, input.telegramFileId, input.mediaType, input.localPath, input.storageUrl ?? null);
     return Number(result.lastInsertRowid);
   }
 

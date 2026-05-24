@@ -14,6 +14,7 @@ CREATE TABLE IF NOT EXISTS media_items (
   telegram_file_id TEXT NOT NULL,
   media_type TEXT NOT NULL CHECK(media_type IN ('image', 'video')),
   local_path TEXT NOT NULL,
+  storage_url TEXT,
   created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
   FOREIGN KEY (user_id) REFERENCES users(id)
 );
