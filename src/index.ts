@@ -11,6 +11,21 @@ import { SchedulerService } from "./services/scheduler.service.js";
 import { StorageService } from "./services/storage.service.js";
 import { logger } from "./utils/logger.js";
 
+function withTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<T> {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error("timeout")), timeoutMs);
+    promise
+      .then((value) => {
+        clearTimeout(timer);
+        resolve(value);
+      })
+      .catch((error) => {
+        clearTimeout(timer);
+        reject(error);
+      });
+  });
+}
+
 async function bootstrap(): Promise<void> {
   const db = await AppDatabase.init(env.DATABASE_URL);
   const safetyService = new SafetyService();
@@ -41,23 +56,42 @@ async function bootstrap(): Promise<void> {
 
   const scheduler = new SchedulerService(db, workflowService);
   scheduler.start();
+  logger.info("Telegram bootstrap preflight", { mode: env.TELEGRAM_MODE });
+
+  let botUsername = "@unknown";
+  let botId: number | "unknown" = "unknown";
+  try {
+    const me = await withTimeout(bot.telegram.getMe(), 10000);
+    botUsername = `@${me.username ?? "unknown"}`;
+    botId = me.id;
+  } catch (error) {
+    logger.warn("Failed to fetch bot identity before launch", {
+      error: error instanceof Error ? error.message : String(error)
+    });
+  }
+
+  const launchPromise =
+    env.TELEGRAM_MODE === "webhook"
+      ? bot.launch({
+          webhook: {
+            domain: env.TELEGRAM_WEBHOOK_DOMAIN!,
+            hookPath: env.TELEGRAM_WEBHOOK_PATH,
+            port: env.PORT,
+            secretToken: env.TELEGRAM_WEBHOOK_SECRET_TOKEN
+          }
+        })
+      : bot.launch();
+
+  launchPromise.catch((error) => {
+    logger.error("Telegram launch failed", {
+      error: error instanceof Error ? error.message : String(error)
+    });
+  });
 
   if (env.TELEGRAM_MODE === "webhook") {
-    await bot.launch({
-      webhook: {
-        domain: env.TELEGRAM_WEBHOOK_DOMAIN!,
-        hookPath: env.TELEGRAM_WEBHOOK_PATH,
-        port: env.PORT,
-        secretToken: env.TELEGRAM_WEBHOOK_SECRET_TOKEN
-      }
-    });
-    logger.info("Telegram bot launched in webhook mode", {
-      domain: env.TELEGRAM_WEBHOOK_DOMAIN,
-      hookPath: env.TELEGRAM_WEBHOOK_PATH
-    });
+    logger.info("Telegram bot started in webhook mode", { botUsername, botId });
   } else {
-    await bot.launch();
-    logger.info("Telegram bot launched in polling mode");
+    logger.info("Telegram bot started in polling mode", { botUsername, botId });
   }
 
   process.once("SIGINT", async () => {

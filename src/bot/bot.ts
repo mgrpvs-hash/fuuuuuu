@@ -35,10 +35,38 @@ function getChatId(ctx: Context): number | null {
   return ctx.chat?.id ?? null;
 }
 
+function getIncomingText(ctx: Context): string {
+  if ("message" in ctx.update && ctx.update.message && "text" in ctx.update.message) {
+    return String(ctx.update.message.text ?? "");
+  }
+  return "";
+}
+
+function userAllowed(userId: number): boolean {
+  if (!env.TELEGRAM_ALLOWED_USER_IDS_LIST.length) {
+    return true;
+  }
+  return env.TELEGRAM_ALLOWED_USER_IDS_LIST.includes(userId);
+}
+
+function parseActionContentId(raw: string): number {
+  const parsed = Number(raw);
+  if (!Number.isFinite(parsed) || parsed <= 0) {
+    throw new AppError("Invalid content id", { code: "VALIDATION_ERROR", statusCode: 400 });
+  }
+  return parsed;
+}
+
 function buildActionKeyboard(contentId: number) {
   return Markup.inlineKeyboard([
-    [Markup.button.callback("Approve", `approve:${contentId}`), Markup.button.callback("Regenerate", `regenerate:${contentId}`)],
-    [Markup.button.callback("Schedule", `schedule:${contentId}`), Markup.button.callback("Cancel", `cancel:${contentId}`)]
+    [
+      Markup.button.callback("Approve", `approve:${contentId}`),
+      Markup.button.callback("Regenerate", `regenerate:${contentId}`)
+    ],
+    [
+      Markup.button.callback("Schedule", `schedule:${contentId}`),
+      Markup.button.callback("Cancel", `cancel:${contentId}`)
+    ]
   ]);
 }
 
@@ -79,21 +107,6 @@ async function safeReply(ctx: Context, text: string): Promise<void> {
   await ctx.telegram.sendMessage(chatId, text);
 }
 
-function parseActionContentId(raw: string): number {
-  const parsed = Number(raw);
-  if (!Number.isFinite(parsed) || parsed <= 0) {
-    throw new AppError("Invalid content id", { code: "VALIDATION_ERROR", statusCode: 400 });
-  }
-  return parsed;
-}
-
-function userAllowed(userId: number): boolean {
-  if (!env.TELEGRAM_ALLOWED_USER_IDS_LIST.length) {
-    return true;
-  }
-  return env.TELEGRAM_ALLOWED_USER_IDS_LIST.includes(userId);
-}
-
 export function createTelegramBot(input: {
   db: AppDatabase;
   aiService: OpenAiService;
@@ -112,6 +125,7 @@ export function createTelegramBot(input: {
     storageService,
     rateLimitService
   } = input;
+
   const bot = new Telegraf(env.TELEGRAM_BOT_TOKEN);
   const draftSessions = new Map<number, DraftSession>();
 
@@ -121,8 +135,11 @@ export function createTelegramBot(input: {
       return next();
     }
 
-    if (!userAllowed(userId)) {
-      await safeReply(ctx, "Access denied for this bot.");
+    const incomingText = getIncomingText(ctx).trim();
+    const isWhoamiCommand = incomingText.startsWith("/whoami");
+
+    if (!userAllowed(userId) && !isWhoamiCommand) {
+      await safeReply(ctx, `Access denied. Your Telegram ID is: ${userId}`);
       return;
     }
 
@@ -146,8 +163,8 @@ export function createTelegramBot(input: {
       await safeReply(
         ctx,
         appError.code === "RATE_LIMITED"
-          ? "Слишком много запросов. Подождите немного и попробуйте снова."
-          : "Не удалось обработать запрос. Повторите попытку."
+          ? "Too many requests. Please retry shortly."
+          : "Could not process request. Please retry."
       );
     }
   });
@@ -170,42 +187,35 @@ export function createTelegramBot(input: {
   bot.help(async (ctx) => {
     await ctx.reply(
       [
-        "/start - начать",
-        "/help - помощь",
-        "/health - статус интеграций",
-        "/whoami - информация о пользователе",
-        "/settings - текущие настройки",
-        "/set_tone <tone> - установить тон коммуникации",
-        "/set_language <ru|en> - язык контента",
-        "/connect_instagram <account_id> - привязать IG аккаунт",
-        "/drafts - последние черновики",
-        "/scheduled - запланированные публикации"
+        "/start",
+        "/help",
+        "/health",
+        "/whoami",
+        "/settings",
+        "/set_tone <tone>",
+        "/set_language <ru|en>",
+        "/connect_instagram <account_id>",
+        "/drafts",
+        "/scheduled"
       ].join("\n")
     );
   });
 
   bot.command("health", async (ctx) => {
-    const lines = [
-      "Health status:",
-      "- Telegram OK",
-      `- OpenAI configured: ${env.OPENAI_API_KEY ? "yes" : "no"}`,
-      `- Instagram configured: ${env.INSTAGRAM_ACCESS_TOKEN && env.INSTAGRAM_BUSINESS_ACCOUNT_ID ? "yes" : "no"}`,
-      `- Supabase configured: ${
-        env.MEDIA_STORAGE_PROVIDER === "supabase" &&
-        env.SUPABASE_URL &&
-        env.SUPABASE_SECRET_KEY &&
-        env.SUPABASE_STORAGE_BUCKET
-          ? "yes"
-          : "no"
-      }`
-    ];
-    await ctx.reply(lines.join("\n"));
+    const allowedConfigured = env.TELEGRAM_ALLOWED_USER_IDS_LIST.length > 0 ? "yes" : "no";
+    await ctx.reply(
+      [
+        "Telegram OK",
+        `Mode: ${env.TELEGRAM_MODE}`,
+        `Allowed user IDs configured: ${allowedConfigured}`
+      ].join("\n")
+    );
   });
 
   bot.command("whoami", async (ctx) => {
     const userId = getUserId(ctx);
-    const username = ctx.from?.username ? `@${ctx.from.username}` : "(no username)";
     if (!userId) return;
+    const username = ctx.from?.username ? `@${ctx.from.username}` : "(no username)";
     await ctx.reply(
       `Telegram user id: ${userId}\nUsername: ${username}\nAllowed: ${userAllowed(userId) ? "yes" : "no"}`
     );
@@ -297,28 +307,23 @@ export function createTelegramBot(input: {
         mediaType: "image",
         fileSize: photo.file_size
       });
-
-      const fileId = photo.file_id;
-      const localPath = await downloadTelegramFile(bot, fileId, "image");
+      const localPath = await downloadTelegramFile(bot, photo.file_id, "image");
       await mediaValidationService.validateStoredFile(localPath, "image");
       const uploaded = await storageService.uploadMediaFromLocal({
         localPath,
         mediaType: "image"
       });
-
       const mediaItemId = db.createMediaItem({
         telegramUserId: userId,
-        telegramFileId: fileId,
+        telegramFileId: photo.file_id,
         mediaType: "image",
         localPath,
         storageUrl: uploaded.publicUrl
       });
-
       draftSessions.set(userId, { mediaItemId, mediaType: "image", description: ctx.message.caption });
       await ctx.reply("Фото получено и загружено в storage. Отправьте текстовое описание для поста.");
     } catch (error) {
       const appError = toAppError(error, "Photo processing failed");
-      botLogger.warn("Photo intake failed", { userId, message: appError.message });
       await ctx.reply(`Ошибка обработки фото: ${appError.message}`);
     }
   });
@@ -336,28 +341,23 @@ export function createTelegramBot(input: {
         fileSize: video.file_size,
         durationSeconds: video.duration
       });
-
-      const fileId = video.file_id;
-      const localPath = await downloadTelegramFile(bot, fileId, "video");
+      const localPath = await downloadTelegramFile(bot, video.file_id, "video");
       await mediaValidationService.validateStoredFile(localPath, "video");
       const uploaded = await storageService.uploadMediaFromLocal({
         localPath,
         mediaType: "video"
       });
-
       const mediaItemId = db.createMediaItem({
         telegramUserId: userId,
-        telegramFileId: fileId,
+        telegramFileId: video.file_id,
         mediaType: "video",
         localPath,
         storageUrl: uploaded.publicUrl
       });
-
       draftSessions.set(userId, { mediaItemId, mediaType: "video", description: ctx.message.caption });
       await ctx.reply("Видео получено и загружено в storage. Отправьте текстовое описание для контента.");
     } catch (error) {
       const appError = toAppError(error, "Video processing failed");
-      botLogger.warn("Video intake failed", { userId, message: appError.message });
       await ctx.reply(`Ошибка обработки видео: ${appError.message}`);
     }
   });
@@ -414,15 +414,13 @@ export function createTelegramBot(input: {
   bot.action(/^ctype:(post|reel|story)$/, async (ctx) => {
     const userId = getUserId(ctx);
     if (!userId) return;
-    const contentType = ctx.match[1] as ContentType;
     const session = draftSessions.get(userId);
     if (!session) {
       await ctx.answerCbQuery("No active draft session");
       return;
     }
-    session.contentType = contentType;
+    session.contentType = ctx.match[1] as ContentType;
     draftSessions.set(userId, session);
-
     await ctx.answerCbQuery();
     await ctx.reply(
       "Выберите язык:",
@@ -433,18 +431,16 @@ export function createTelegramBot(input: {
   bot.action(/^lang:(ru|en)$/, async (ctx) => {
     const userId = getUserId(ctx);
     if (!userId) return;
-    const language = ctx.match[1] as Language;
     const session = draftSessions.get(userId);
     if (!session || !session.description || !session.contentType) {
       await ctx.answerCbQuery("Нет данных для генерации");
       return;
     }
 
-    session.language = language;
-    draftSessions.set(userId, session);
+    const language = ctx.match[1] as Language;
+    const user = db.getUserByTelegramId(userId);
     await ctx.answerCbQuery();
 
-    const user = db.getUserByTelegramId(userId);
     const inputSafety = safetyService.analyzeText(session.description);
     if (inputSafety.hasUnsafeClaims) {
       await ctx.reply(
@@ -494,11 +490,6 @@ export function createTelegramBot(input: {
       );
     } catch (error) {
       const appError = toAppError(error, "Generation failed");
-      botLogger.error("Generation failed", {
-        userId,
-        code: appError.code,
-        message: appError.message
-      });
       await ctx.reply(`Ошибка генерации: ${appError.message}`);
     }
   });
@@ -508,7 +499,6 @@ export function createTelegramBot(input: {
     if (!userId) return;
     const contentId = parseActionContentId(ctx.match[1]);
     await ctx.answerCbQuery("Publishing...");
-
     try {
       db.getGeneratedContentByIdForTelegramUser(contentId, userId);
       workflowService.approveDraft(contentId);
@@ -524,23 +514,12 @@ export function createTelegramBot(input: {
     const userId = getUserId(ctx);
     if (!userId) return;
     const contentId = parseActionContentId(ctx.match[1]);
-
     try {
       const draft = db.getGeneratedContentByIdForTelegramUser(contentId, userId);
       const media = db.getMediaItemById(draft.media_item_id);
       if (!media) {
         throw new AppError("Media not found", { code: "NOT_FOUND", statusCode: 404 });
       }
-
-      draftSessions.set(userId, {
-        mediaItemId: media.id,
-        mediaType: media.media_type,
-        description: draft.description,
-        contentType: draft.content_type,
-        language: draft.language
-      });
-      await ctx.answerCbQuery();
-      await ctx.reply("Запускаю новую генерацию...");
 
       const inputSafety = safetyService.analyzeText(draft.description);
       const user = db.getUserByTelegramId(userId);
@@ -553,7 +532,6 @@ export function createTelegramBot(input: {
         hasImage: media.media_type === "image",
         safetyNotes: inputSafety.blockedTerms
       });
-
       const newContentId = db.createGeneratedContent({
         telegramUserId: userId,
         mediaItemId: media.id,
@@ -569,6 +547,7 @@ export function createTelegramBot(input: {
         safeRewriteHint: generated.safeRewriteHint
       });
       db.selectCaption(newContentId, generated.captions[0]);
+      await ctx.answerCbQuery();
       await ctx.reply(
         formatGeneratedPreview({
           contentId: newContentId,
@@ -593,7 +572,6 @@ export function createTelegramBot(input: {
     const userId = getUserId(ctx);
     if (!userId) return;
     const contentId = parseActionContentId(ctx.match[1]);
-
     try {
       db.getGeneratedContentByIdForTelegramUser(contentId, userId);
       const session = draftSessions.get(userId) ?? { mediaItemId: 0, mediaType: "image" as MediaType };
@@ -612,7 +590,6 @@ export function createTelegramBot(input: {
     const userId = getUserId(ctx);
     if (!userId) return;
     const contentId = parseActionContentId(ctx.match[1]);
-
     try {
       db.getGeneratedContentByIdForTelegramUser(contentId, userId);
       db.updateGeneratedStatus(contentId, "failed");

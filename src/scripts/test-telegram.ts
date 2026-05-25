@@ -30,9 +30,9 @@ async function main(): Promise<void> {
     throw new Error(payload.description || `Telegram getMe failed (${response.status})`);
   }
 
-  console.log("Telegram bot token check passed.");
-  console.log(`Bot username: @${payload.result.username ?? "unknown"}`);
-  console.log(`Bot id: ${payload.result.id}`);
+  console.log("Telegram OK");
+  console.log(`bot username: @${payload.result.username ?? "unknown"}`);
+  console.log(`bot id: ${payload.result.id}`);
 }
 
 main().catch((error) => {
