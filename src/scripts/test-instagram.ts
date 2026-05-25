@@ -1,3 +1,4 @@
+import { createHmac } from "node:crypto";
 import fs from "node:fs/promises";
 import path from "node:path";
 
@@ -8,6 +9,7 @@ type InstagramEnv = {
   INSTAGRAM_ACCESS_TOKEN: string;
   INSTAGRAM_BUSINESS_ACCOUNT_ID: string;
   FACEBOOK_PAGE_ID?: string;
+  META_APP_SECRET?: string;
 };
 
 async function loadEnv(): Promise<InstagramEnv> {
@@ -26,13 +28,25 @@ async function loadEnv(): Promise<InstagramEnv> {
     INSTAGRAM_GRAPH_API_BASE: parsed.INSTAGRAM_GRAPH_API_BASE || "https://graph.facebook.com/v20.0",
     INSTAGRAM_ACCESS_TOKEN: parsed.INSTAGRAM_ACCESS_TOKEN,
     INSTAGRAM_BUSINESS_ACCOUNT_ID: parsed.INSTAGRAM_BUSINESS_ACCOUNT_ID,
-    FACEBOOK_PAGE_ID: parsed.FACEBOOK_PAGE_ID
+    FACEBOOK_PAGE_ID: parsed.FACEBOOK_PAGE_ID,
+    META_APP_SECRET: parsed.META_APP_SECRET
   };
+}
+
+function buildAppSecretProof(env: InstagramEnv): string | undefined {
+  if (!env.META_APP_SECRET) {
+    return undefined;
+  }
+  return createHmac("sha256", env.META_APP_SECRET).update(env.INSTAGRAM_ACCESS_TOKEN).digest("hex");
 }
 
 async function graphGet(env: InstagramEnv, endpoint: string): Promise<Record<string, unknown>> {
   const url = new URL(`${env.INSTAGRAM_GRAPH_API_BASE}${endpoint}`);
   url.searchParams.set("access_token", env.INSTAGRAM_ACCESS_TOKEN);
+  const proof = buildAppSecretProof(env);
+  if (proof) {
+    url.searchParams.set("appsecret_proof", proof);
+  }
   const response = await fetch(url.toString());
   const payload = (await response.json()) as Record<string, unknown>;
   if (!response.ok) {

@@ -1,3 +1,4 @@
+import { createHmac } from "node:crypto";
 import path from "node:path";
 
 import { env } from "../config/env.js";
@@ -56,11 +57,15 @@ export class InstagramService {
   private readonly baseUrl: string;
   private readonly accountId: string;
   private readonly token: string;
+  private readonly appSecretProof?: string;
 
   constructor() {
     this.baseUrl = env.INSTAGRAM_GRAPH_API_BASE;
     this.accountId = env.INSTAGRAM_BUSINESS_ACCOUNT_ID;
     this.token = env.INSTAGRAM_ACCESS_TOKEN;
+    this.appSecretProof = env.META_APP_SECRET
+      ? createHmac("sha256", env.META_APP_SECRET).update(this.token).digest("hex")
+      : undefined;
   }
 
   private toPublicMediaUrl(pathOrUrl: string): string {
@@ -90,6 +95,9 @@ export class InstagramService {
       let response: Response;
       if (options.method === "GET") {
         url.searchParams.set("access_token", this.token);
+        if (this.appSecretProof) {
+          url.searchParams.set("appsecret_proof", this.appSecretProof);
+        }
         response = await fetch(url.toString(), {
           method: "GET",
           signal: controller.signal
@@ -99,6 +107,9 @@ export class InstagramService {
           ...(options.params ?? {}),
           access_token: this.token
         });
+        if (this.appSecretProof) {
+          body.set("appsecret_proof", this.appSecretProof);
+        }
         response = await fetch(url.toString(), {
           method: "POST",
           headers: { "Content-Type": "application/x-www-form-urlencoded" },
