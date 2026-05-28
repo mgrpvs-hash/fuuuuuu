@@ -11,6 +11,7 @@
     "test:env": "tsx src/scripts/test-env.ts",
     "test:storage": "tsx src/scripts/test-storage.ts",
     "test:instagram": "tsx src/scripts/test-instagram.ts",
+    "test:instagram-publish": "tsx src/scripts/test-instagram-publish.ts",
     "test:telegram": "tsx src/scripts/test-telegram.ts",
     "debug:instagram-access": "tsx src/scripts/debug-instagram-access.ts"
   },

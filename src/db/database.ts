@@ -134,6 +134,14 @@ export class AppDatabase {
     return this.db.prepare("SELECT * FROM media_items WHERE id = ?").get(id) as DbMediaItem | undefined;
   }
 
+  getLatestMediaItemWithStorageUrl(mediaType: MediaType = "image"): DbMediaItem | undefined {
+    return this.db
+      .prepare(
+        "SELECT * FROM media_items WHERE storage_url IS NOT NULL AND media_type = ? ORDER BY datetime(created_at) DESC, id DESC LIMIT 1"
+      )
+      .get(mediaType) as DbMediaItem | undefined;
+  }
+
   createGeneratedContent(input: {
     telegramUserId: number;
     mediaItemId: number;

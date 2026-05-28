@@ -102,7 +102,10 @@ export class ContentWorkflowService {
         igMediaId: result.igMediaId,
         igContainerId: result.igContainerId
       });
-      return { success: true, message: "Published successfully" };
+      const message = result.warning
+        ? `Published successfully. Warning: ${result.warning}`
+        : "Published successfully";
+      return { success: true, message };
     } catch (error) {
       const appError =
         error instanceof AppError

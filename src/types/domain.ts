@@ -40,4 +40,5 @@ export interface PublishResult {
   igMediaId?: string;
   igContainerId?: string;
   error?: string;
+  warning?: string;
 }
