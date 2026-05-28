@@ -19,7 +19,7 @@ export interface AssistantIntent {
 
 const MEDICAL_DIAGNOSIS_PATTERNS = [
   /какой\s+у\s+меня\s+диагноз/i,
-  /поставь\s+диагноз/i,
+  /постав(ь|ьте)\s+.*диагноз/i,
   /what\s+diagnosis/i,
   /назнач(ь|и)\s+лечение/i,
   /что\s+мне\s+принимать/i,
