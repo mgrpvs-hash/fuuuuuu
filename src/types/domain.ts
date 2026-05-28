@@ -30,6 +30,11 @@ export interface GeneratedContentPayload {
   hashtags: string[];
   cta: string;
   storyText: string;
+  postCaption?: string;
+  visualTitle?: string;
+  visualSubtitle?: string;
+  designHint?: string;
+  bulletPoints?: string[];
   reelIdea?: string;
   riskWarning?: string;
   safeRewriteHint?: string;

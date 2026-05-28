@@ -2,13 +2,20 @@ import dayjs from "dayjs";
 import fsSync from "node:fs";
 import fs from "node:fs/promises";
 import path from "node:path";
+import sharp from "sharp";
 import { Context, Markup, Telegraf } from "telegraf";
 
 import { env } from "../config/env.js";
-import { AppDatabase, DbMediaItem } from "../db/database.js";
+import { AppDatabase, DbGeneratedContent, DbMediaItem } from "../db/database.js";
+import { AssistantCommandService } from "../services/assistant-command.service.js";
 import { formatInstagramCaption } from "../services/caption-formatter.service.js";
 import { ContentWorkflowService } from "../services/content-workflow.service.js";
-import { MediaDesignService } from "../services/media-design.service.js";
+import { DesignSelectionService } from "../services/design-selection.service.js";
+import {
+  MEDIA_DESIGN_VARIANTS,
+  MediaDesignService,
+  MediaDesignVariant
+} from "../services/media-design.service.js";
 import { MediaValidationService } from "../services/media-validation.service.js";
 import { OpenAiService } from "../services/openai.service.js";
 import { RateLimitService } from "../services/rate-limit.service.js";
@@ -27,6 +34,8 @@ type DraftSession = {
   contentType?: ContentType;
   language?: Language;
   awaitingScheduleForContentId?: number;
+  activeDraftContentId?: number;
+  preferredStyle?: MediaDesignVariant;
 };
 
 type GeneratedPayload = {
@@ -36,12 +45,27 @@ type GeneratedPayload = {
   hashtags: string[];
   cta: string;
   storyText: string;
+  visualTitle?: string | null;
+  visualSubtitle?: string | null;
+  designHint?: string | null;
+  bulletPoints?: string[];
   reelIdea?: string | null;
   riskWarning?: string | null;
   safeRewriteHint?: string | null;
 };
 
 const botLogger = logger.child({ component: "telegram-bot" });
+
+const STYLE_LABELS: Record<MediaDesignVariant, string> = {
+  clean_light: "Clean",
+  premium_card: "Premium",
+  equipment_focus: "Equipment",
+  announcement: "Announcement",
+  educational: "Educational",
+  minimal_storylike: "Minimal",
+  split_layout: "Split",
+  full_bleed_blur: "Blur"
+};
 
 function getUserId(ctx: Context): number | null {
   return ctx.from?.id ?? null;
@@ -88,10 +112,10 @@ function parseJsonStringArray(raw: string): string[] {
 function deriveVisualTitle(language: Language, selectedCaption: string): string {
   const normalized = selectedCaption.replace(/\s+/g, " ").trim();
   if (!normalized) {
-    return language === "en" ? "Modern equipment at our clinic" : "Современное оборудование в клинике";
+    return language === "en" ? "Modern care space" : "Современное пространство для ухода";
   }
   const firstSentence = normalized.split(/[.!?]/)[0]?.trim() ?? normalized;
-  return firstSentence.slice(0, 90);
+  return firstSentence.slice(0, 70);
 }
 
 function buildActionKeyboard(contentId: number) {
@@ -102,11 +126,38 @@ function buildActionKeyboard(contentId: number) {
     ],
     [
       Markup.button.callback("Regenerate design", `regenerate_design:${contentId}`),
+      Markup.button.callback("Change style", `change_style:${contentId}`)
+    ],
+    [
+      Markup.button.callback("Shorter caption", `caption_shorter:${contentId}`),
+      Markup.button.callback("More professional", `caption_professional:${contentId}`)
+    ],
+    [
+      Markup.button.callback("Remove hashtags", `caption_nohashtags:${contentId}`),
       Markup.button.callback("Use original photo", `use_original:${contentId}`)
     ],
     [
       Markup.button.callback("Schedule", `schedule:${contentId}`),
       Markup.button.callback("Cancel", `cancel:${contentId}`)
+    ]
+  ]);
+}
+
+function buildStyleKeyboard(contentId: number) {
+  return Markup.inlineKeyboard([
+    [
+      Markup.button.callback("Clean", `stylepick:${contentId}:clean_light`),
+      Markup.button.callback("Premium", `stylepick:${contentId}:premium_card`),
+      Markup.button.callback("Equipment", `stylepick:${contentId}:equipment_focus`)
+    ],
+    [
+      Markup.button.callback("Announcement", `stylepick:${contentId}:announcement`),
+      Markup.button.callback("Educational", `stylepick:${contentId}:educational`),
+      Markup.button.callback("Minimal", `stylepick:${contentId}:minimal_storylike`)
+    ],
+    [
+      Markup.button.callback("Split", `stylepick:${contentId}:split_layout`),
+      Markup.button.callback("Blur", `stylepick:${contentId}:full_bleed_blur`)
     ]
   ]);
 }
@@ -121,7 +172,7 @@ function buildDesignFailureKeyboard(contentId: number) {
   ]);
 }
 
-function formatGeneratedPreview(payload: {
+function formatCaptionOnlyPreview(payload: {
   contentId: number;
   finalCaption: string;
   captionWarning?: string;
@@ -147,18 +198,17 @@ async function safeReply(ctx: Context, text: string): Promise<void> {
   await ctx.telegram.sendMessage(chatId, text);
 }
 
-async function sendPreviewPhotoIfExists(ctx: Context, previewPath: string | null): Promise<void> {
+async function sendPreviewPhoto(ctx: Context, previewPath: string | null, variant?: MediaDesignVariant): Promise<void> {
   if (!previewPath) {
     return;
   }
   const chatId = getChatId(ctx);
-  if (!chatId) {
-    return;
-  }
+  if (!chatId) return;
 
   try {
     const source = await fs.readFile(previewPath);
-    await ctx.telegram.sendPhoto(chatId, { source }, { caption: "Processed preview" });
+    const variantText = variant ? ` — variant: ${variant}` : "";
+    await ctx.telegram.sendPhoto(chatId, { source }, { caption: `Processed preview${variantText}` });
   } catch (error) {
     const appError = toAppError(error, "Preview upload failed");
     await safeReply(ctx, `Не удалось отправить preview: ${appError.message}`);
@@ -173,10 +223,73 @@ async function inspectSourcePath(localPath: string): Promise<{ exists: boolean; 
     return { exists: false, fileSize: 0 };
   }
   const stat = await fs.stat(localPath);
-  return {
-    exists: true,
-    fileSize: stat.size
-  };
+  return { exists: true, fileSize: stat.size };
+}
+
+async function detectMediaOrientation(media: DbMediaItem): Promise<"portrait" | "landscape" | "square" | "unknown"> {
+  try {
+    const metadata = await sharp(media.local_path).metadata();
+    const width = metadata.width ?? 0;
+    const height = metadata.height ?? 0;
+    if (!width || !height) {
+      return "unknown";
+    }
+    const ratio = width / height;
+    if (ratio > 1.05) return "landscape";
+    if (ratio < 0.95) return "portrait";
+    return "square";
+  } catch {
+    return "unknown";
+  }
+}
+
+function mapDesignHintToVariant(hint?: string | null): MediaDesignVariant | null {
+  if (!hint) return null;
+  const normalized = hint.trim().toLowerCase();
+  if (MEDIA_DESIGN_VARIANTS.includes(normalized as MediaDesignVariant)) {
+    return normalized as MediaDesignVariant;
+  }
+  return null;
+}
+
+function chooseStyleFromText(text: string): MediaDesignVariant | null {
+  const normalized = text.toLowerCase();
+  if (/premium|премиал/.test(normalized)) return "premium_card";
+  if (/equipment|оборуд|аппарат/.test(normalized)) return "equipment_focus";
+  if (/announce|анонс|новый врач|новая/.test(normalized)) return "announcement";
+  if (/education|образоват|совет/.test(normalized)) return "educational";
+  if (/minimal|миним/.test(normalized)) return "minimal_storylike";
+  if (/split|раздел/.test(normalized)) return "split_layout";
+  if (/blur|фон/.test(normalized)) return "full_bleed_blur";
+  if (/clean|light|чист/.test(normalized)) return "clean_light";
+  return null;
+}
+
+function extractHashtags(caption: string): string[] {
+  return caption.match(/#[\p{L}\p{N}_]+/gu) ?? [];
+}
+
+function removeHashtagsFromCaption(caption: string): string {
+  return caption
+    .replace(/\s*#[\p{L}\p{N}_]+/gu, "")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+}
+
+function shortenCaptionText(caption: string): string {
+  const hashtags = extractHashtags(caption);
+  const withoutTags = removeHashtagsFromCaption(caption);
+  const target = Math.max(280, Math.floor(withoutTags.length * 0.68));
+  const shortened = withoutTags.length > target ? `${withoutTags.slice(0, target).trimEnd()}…` : withoutTags;
+  return [shortened, hashtags.join(" ")].filter(Boolean).join("\n\n").trim();
+}
+
+function makeCaptionMoreProfessional(caption: string): string {
+  return caption
+    .replace(/крутой|супер|вау|wow/gi, "профессиональный")
+    .replace(/приходите прямо сейчас/gi, "запишитесь на консультацию")
+    .replace(/\s+/g, " ")
+    .trim();
 }
 
 export function createTelegramBot(input: {
@@ -188,6 +301,8 @@ export function createTelegramBot(input: {
   storageService: StorageService;
   mediaDesignService: MediaDesignService;
   videoDesignService: VideoDesignService;
+  designSelectionService: DesignSelectionService;
+  assistantCommandService: AssistantCommandService;
   rateLimitService: RateLimitService;
 }): Telegraf {
   const {
@@ -199,11 +314,39 @@ export function createTelegramBot(input: {
     storageService,
     mediaDesignService,
     videoDesignService,
+    designSelectionService,
+    assistantCommandService,
     rateLimitService
   } = input;
 
   const bot = new Telegraf(env.TELEGRAM_BOT_TOKEN);
   const draftSessions = new Map<number, DraftSession>();
+
+  const setActiveDraftForUser = (userId: number, contentId: number, mediaItemId: number, mediaType: MediaType) => {
+    const current = draftSessions.get(userId) ?? { mediaItemId, mediaType };
+    current.mediaItemId = mediaItemId;
+    current.mediaType = mediaType;
+    current.activeDraftContentId = contentId;
+    draftSessions.set(userId, current);
+  };
+
+  const applyFinalCaption = (draft: DbGeneratedContent, payload: GeneratedPayload): { finalCaption: string; warning?: string; hashtags: string[] } => {
+    const selectedCaption = payload.captions[0] ?? draft.selected_caption ?? "";
+    db.selectCaption(draft.id, selectedCaption);
+    const formatted = formatInstagramCaption({
+      selectedCaption,
+      cta: payload.cta,
+      hashtags: payload.hashtags,
+      contentType: payload.contentType
+    });
+    db.updateFinalCaptionAndHashtags({
+      contentId: draft.id,
+      finalCaption: formatted.caption,
+      hashtags: formatted.hashtags,
+      selectedCaption
+    });
+    return { finalCaption: formatted.caption, warning: formatted.warning, hashtags: formatted.hashtags };
+  };
 
   const prepareMediaDesignAndPreview = async (args: {
     ctx: Context;
@@ -211,37 +354,49 @@ export function createTelegramBot(input: {
     media: DbMediaItem;
     payload: GeneratedPayload;
     forceUseOriginal?: boolean;
+    preferredStyle?: MediaDesignVariant | null;
   }): Promise<{
     finalCaption: string;
     captionWarning?: string;
     useOriginalMedia: boolean;
     designFailed: boolean;
+    designVariant?: MediaDesignVariant;
   }> => {
-    const selectedCaption = args.payload.captions[0] ?? "";
-    db.selectCaption(args.contentId, selectedCaption);
+    const draft = db.getGeneratedContentById(args.contentId);
+    if (!draft) {
+      throw new AppError("Draft not found", { code: "NOT_FOUND", statusCode: 404 });
+    }
 
-    const formatted = formatInstagramCaption({
-      selectedCaption,
-      cta: args.payload.cta,
-      hashtags: args.payload.hashtags,
-      contentType: args.payload.contentType
-    });
-    db.setFinalInstagramCaption(args.contentId, formatted.caption);
+    const captionResult = applyFinalCaption(draft, args.payload);
     db.setUseOriginalMedia(args.contentId, args.forceUseOriginal ? true : false);
 
     let useOriginalMedia = Boolean(args.forceUseOriginal);
     let designFailed = false;
     let previewPath: string | null = null;
+    let designVariant: MediaDesignVariant | undefined;
 
     if (!useOriginalMedia) {
       const inputKind = /^https:\/\//i.test(args.media.local_path) ? "url" : "path";
       const sourcePathDebug = await inspectSourcePath(args.media.local_path);
+      const orientation = await detectMediaOrientation(args.media);
+      const selection = designSelectionService.chooseTemplate({
+        contentType: args.payload.contentType,
+        language: args.payload.language,
+        description: draft.description,
+        visualTitle: args.payload.visualTitle ?? undefined,
+        previousVariant: (draft.design_variant as MediaDesignVariant | null) ?? null,
+        orientation,
+        preferredStyle: args.preferredStyle ?? mapDesignHintToVariant(args.payload.designHint)
+      });
+
       botLogger.info("media design input debug", {
         draftId: args.contentId,
         mediaItemId: args.media.id,
         input_kind: inputKind,
         input_path_exists: sourcePathDebug.exists ? "yes" : "no",
-        input_file_size: sourcePathDebug.fileSize
+        input_file_size: sourcePathDebug.fileSize,
+        orientation,
+        selected_template: selection.templateId
       });
 
       try {
@@ -249,8 +404,12 @@ export function createTelegramBot(input: {
           const imageDesign = await mediaDesignService.createBrandedPostImage({
             sourcePath: args.media.local_path,
             language: args.payload.language,
-            title: deriveVisualTitle(args.payload.language, selectedCaption)
+            title: args.payload.visualTitle ?? deriveVisualTitle(args.payload.language, draft.selected_caption ?? ""),
+            subtitle: args.payload.visualSubtitle ?? undefined,
+            bulletPoints: args.payload.bulletPoints,
+            variant: selection.templateId
           });
+          designVariant = imageDesign.designVariant;
           const uploaded = await storageService.uploadMediaFromLocal({
             localPath: imageDesign.outputPath,
             mediaType: "image"
@@ -262,6 +421,12 @@ export function createTelegramBot(input: {
             mediaProcessingStatus: "processed",
             mediaDesignVersion: imageDesign.designVersion
           });
+          db.updateDesignMetadata({
+            contentId: args.contentId,
+            designVariant: imageDesign.designVariant,
+            designSeed: selection.seed,
+            incrementAttempt: true
+          });
           previewPath = imageDesign.outputPath;
           botLogger.info("media design output debug", {
             draftId: args.contentId,
@@ -272,19 +437,19 @@ export function createTelegramBot(input: {
             original_image_width: imageDesign.source.width,
             original_image_height: imageDesign.source.height,
             design_variant: imageDesign.designVariant,
-            image_area_mode: imageDesign.imageAreaMode,
             output_width: imageDesign.output.width,
             output_height: imageDesign.output.height,
             output_file_size: imageDesign.output.fileSize,
             processed_image_path: imageDesign.outputPath,
             processed_image_uploaded: "yes",
-            processed_media_url_exists: uploaded.publicUrl ? "yes" : "no"
+            processed_media_url_exists: uploaded.publicUrl ? "yes" : "no",
+            icon_enabled: imageDesign.layoutMetadata.iconEnabled ? "yes" : "no"
           });
         } else {
           const videoDesign = await videoDesignService.createStyledReel({
             sourcePath: args.media.local_path,
             language: args.payload.language,
-            title: deriveVisualTitle(args.payload.language, selectedCaption)
+            title: args.payload.visualTitle ?? deriveVisualTitle(args.payload.language, draft.selected_caption ?? "")
           });
           const uploaded = await storageService.uploadMediaFromLocal({
             localPath: videoDesign.outputPath,
@@ -297,20 +462,14 @@ export function createTelegramBot(input: {
             mediaProcessingStatus: "processed",
             mediaDesignVersion: videoDesign.designVersion
           });
-          previewPath = videoDesign.coverImagePath;
-          botLogger.info("media design output debug", {
-            draftId: args.contentId,
-            mediaItemId: args.media.id,
-            input_kind: "path",
-            input_path_exists: sourcePathDebug.exists ? "yes" : "no",
-            input_file_size: sourcePathDebug.fileSize,
-            design_variant: "video-preview",
-            image_area_mode: "video-cover",
-            processed_image_path: videoDesign.coverImagePath,
-            processed_image_uploaded: "yes",
-            processed_media_url_exists: uploaded.publicUrl ? "yes" : "no",
-            warning: videoDesign.warning ?? null
+          db.updateDesignMetadata({
+            contentId: args.contentId,
+            designVariant: "full_bleed_blur",
+            designSeed: selection.seed,
+            incrementAttempt: true
           });
+          previewPath = videoDesign.coverImagePath;
+          designVariant = "full_bleed_blur";
         }
       } catch (error) {
         const appError = toAppError(error, "Media design processing failed");
@@ -331,23 +490,28 @@ export function createTelegramBot(input: {
       }
     }
 
-    await sendPreviewPhotoIfExists(args.ctx, previewPath);
+    await sendPreviewPhoto(args.ctx, previewPath, designVariant);
     return {
-      finalCaption: formatted.caption,
-      captionWarning: formatted.warning,
+      finalCaption: captionResult.finalCaption,
+      captionWarning: captionResult.warning,
       useOriginalMedia,
-      designFailed
+      designFailed,
+      designVariant
     };
   };
 
   const sendDraftPreview = async (args: {
     ctx: Context;
+    userId: number;
     contentId: number;
     media: DbMediaItem;
     payload: GeneratedPayload;
     forceUseOriginal?: boolean;
+    preferredStyle?: MediaDesignVariant | null;
   }): Promise<void> => {
     const designResult = await prepareMediaDesignAndPreview(args);
+    setActiveDraftForUser(args.userId, args.contentId, args.media.id, args.media.media_type);
+
     if (designResult.designFailed) {
       await args.ctx.reply(
         "Не удалось создать дизайн изображения. Можно использовать оригинал или попробовать снова.",
@@ -355,8 +519,9 @@ export function createTelegramBot(input: {
       );
       return;
     }
+
     await args.ctx.reply(
-      formatGeneratedPreview({
+      formatCaptionOnlyPreview({
         contentId: args.contentId,
         finalCaption: designResult.finalCaption,
         captionWarning: designResult.captionWarning,
@@ -364,6 +529,157 @@ export function createTelegramBot(input: {
       }),
       buildActionKeyboard(args.contentId)
     );
+  };
+
+  const getDraftPayload = (draft: DbGeneratedContent): GeneratedPayload => ({
+    contentType: draft.content_type,
+    language: draft.language,
+    captions: parseJsonStringArray(draft.captions_json),
+    hashtags: parseJsonStringArray(draft.hashtags_json),
+    cta: draft.cta,
+    storyText: draft.story_text,
+    visualTitle: draft.visual_title,
+    visualSubtitle: draft.visual_subtitle,
+    designHint: draft.design_hint,
+    bulletPoints: [],
+    reelIdea: draft.reel_idea,
+    riskWarning: draft.risk_warning,
+    safeRewriteHint: draft.safe_rewrite_hint
+  });
+
+  const handleAssistantChat = async (ctx: Context, userId: number, text: string): Promise<void> => {
+    const user = db.getUserByTelegramId(userId);
+    if (assistantCommandService.isMedicalAdviceQuestion(text)) {
+      await ctx.reply(assistantCommandService.buildMedicalSafetyReply(user.language));
+      return;
+    }
+
+    const intent = assistantCommandService.classify(text);
+    if (intent.type === "approve_intent") {
+      await ctx.reply("Подтвердите публикацию кнопкой Approve.");
+      return;
+    }
+    if (intent.type === "generate_ideas") {
+      const ideas = await aiService.generateIdeas({ language: user.language, count: 10 });
+      await ctx.reply(ideas);
+      return;
+    }
+    if (intent.type === "content_plan") {
+      const plan = await aiService.generateWeeklyContentPlan({ language: user.language });
+      await ctx.reply(plan);
+      return;
+    }
+
+    const answer = await aiService.chatAssistant({
+      language: user.language,
+      prompt: text,
+      context:
+        user.language === "ru"
+          ? "Отвечай как AI контент-ассистент клиники: безопасный маркетинг, идеи, стиль, без диагноза."
+          : "Reply as clinic content AI assistant: safe marketing, content strategy, no diagnosis."
+    });
+    await ctx.reply(answer);
+  };
+
+  const handleDraftInstruction = async (
+    ctx: Context,
+    userId: number,
+    contentId: number,
+    instruction: string
+  ): Promise<void> => {
+    const draft = db.getGeneratedContentByIdForTelegramUser(contentId, userId);
+    const media = db.getMediaItemById(draft.media_item_id);
+    if (!media) {
+      throw new AppError("Media not found", { code: "NOT_FOUND", statusCode: 404 });
+    }
+
+    const intent = assistantCommandService.classify(instruction);
+    if (assistantCommandService.isMedicalAdviceQuestion(instruction)) {
+      await ctx.reply(assistantCommandService.buildMedicalSafetyReply(draft.language));
+      return;
+    }
+
+    if (intent.type === "approve_intent") {
+      await ctx.reply("Подтвердите публикацию кнопкой Approve.");
+      return;
+    }
+    if (intent.type === "cancel") {
+      db.updateGeneratedStatus(draft.id, "failed");
+      const session = draftSessions.get(userId);
+      if (session) {
+        session.activeDraftContentId = undefined;
+        draftSessions.set(userId, session);
+      }
+      await ctx.reply("Draft отменён.");
+      return;
+    }
+    if (intent.type === "use_original") {
+      db.setUseOriginalMedia(draft.id, true);
+      await ctx.reply(
+        [
+          "Будет опубликовано исходное фото без дизайна.",
+          "",
+          "Текст, который будет опубликован в Instagram:",
+          draft.final_instagram_caption ?? draft.selected_caption ?? ""
+        ].join("\n"),
+        buildActionKeyboard(draft.id)
+      );
+      return;
+    }
+    if (intent.type === "change_language" && intent.languageHint) {
+      db.updateGeneratedLanguage(draft.id, intent.languageHint);
+      await ctx.reply(`Язык draft обновлён на ${intent.languageHint.toUpperCase()}. Нажмите Regenerate text.`);
+      return;
+    }
+    if (intent.type === "edit_design") {
+      await sendDraftPreview({
+        ctx,
+        userId,
+        contentId: draft.id,
+        media,
+        payload: getDraftPayload(draft),
+        preferredStyle: chooseStyleFromText(instruction)
+      });
+      return;
+    }
+    if (intent.type === "edit_caption") {
+      const currentCaption = draft.final_instagram_caption ?? draft.selected_caption ?? "";
+      let updatedCaption = currentCaption;
+      let hashtags = parseJsonStringArray(draft.hashtags_json);
+      const lower = instruction.toLowerCase();
+      if (/убери хэшт|remove hashtags/.test(lower)) {
+        updatedCaption = removeHashtagsFromCaption(updatedCaption);
+        hashtags = [];
+      }
+      if (/короче|shorter|проще/.test(lower)) {
+        updatedCaption = shortenCaptionText(updatedCaption);
+      }
+      if (/профессиональ|more professional/.test(lower)) {
+        updatedCaption = makeCaptionMoreProfessional(updatedCaption);
+      }
+      db.updateFinalCaptionAndHashtags({
+        contentId: draft.id,
+        finalCaption: updatedCaption,
+        hashtags,
+        selectedCaption: draft.selected_caption ?? undefined
+      });
+      await ctx.reply(
+        ["Текст, который будет опубликован в Instagram:", updatedCaption].join("\n"),
+        buildActionKeyboard(draft.id)
+      );
+      return;
+    }
+
+    if (intent.type === "generate_ideas") {
+      await ctx.reply(await aiService.generateIdeas({ language: draft.language, count: 5 }));
+      return;
+    }
+    if (intent.type === "content_plan") {
+      await ctx.reply(await aiService.generateWeeklyContentPlan({ language: draft.language }));
+      return;
+    }
+
+    await ctx.reply("Инструкцию не удалось распознать. Попробуйте: «сделай дизайн премиальнее» или «сделай текст короче».");
   };
 
   bot.use(async (ctx, next) => {
@@ -412,11 +728,9 @@ export function createTelegramBot(input: {
     db.getOrCreateUser(userId);
     await ctx.reply(
       [
-        "Привет! Я помогу подготовить безопасный медицинский контент для Instagram.",
-        "1) Отправьте фото или видео",
-        "2) Добавьте описание",
-        "3) Выберите тип контента и язык",
-        "4) Подтвердите публикацию вручную (human approval)"
+        "Привет! Я AI content assistant для Instagram клиники.",
+        "Можно отправить фото/видео для нового поста или написать обычный вопрос по контенту.",
+        "Команды: /newpost /ideas /contentplan /draft /cancel"
       ].join("\n")
     );
   });
@@ -428,14 +742,32 @@ export function createTelegramBot(input: {
         "/help",
         "/health",
         "/whoami",
+        "/newpost",
+        "/ideas",
+        "/contentplan",
         "/settings",
-        "/set_tone <tone>",
-        "/set_language <ru|en>",
-        "/connect_instagram <account_id>",
-        "/drafts",
-        "/scheduled"
+        "/draft",
+        "/cancel"
       ].join("\n")
     );
+  });
+
+  bot.command("newpost", async (ctx) => {
+    await ctx.reply("Отправьте фото/видео и затем описание. Я подготовлю дизайн и финальный caption для утверждения.");
+  });
+
+  bot.command("ideas", async (ctx) => {
+    const userId = getUserId(ctx);
+    if (!userId) return;
+    const user = db.getUserByTelegramId(userId);
+    await ctx.reply(await aiService.generateIdeas({ language: user.language, count: 10 }));
+  });
+
+  bot.command("contentplan", async (ctx) => {
+    const userId = getUserId(ctx);
+    if (!userId) return;
+    const user = db.getUserByTelegramId(userId);
+    await ctx.reply(await aiService.generateWeeklyContentPlan({ language: user.language }));
   });
 
   bot.command("health", async (ctx) => {
@@ -463,74 +795,40 @@ export function createTelegramBot(input: {
     if (!userId) return;
     const user = db.getUserByTelegramId(userId);
     await ctx.reply(
-      `Tone: ${user.tone}\nLanguage: ${user.language}\nInstagram account id: ${user.instagram_account_id ?? env.INSTAGRAM_BUSINESS_ACCOUNT_ID}`
+      [
+        `language: ${user.language}`,
+        "default content type: post",
+        "media processing enabled: yes",
+        "brand name: MC Clinic Medical"
+      ].join("\n")
     );
   });
 
-  bot.command("set_tone", async (ctx) => {
+  bot.command("draft", async (ctx) => {
     const userId = getUserId(ctx);
     if (!userId) return;
-    const tone = ctx.message.text.split(" ").slice(1).join(" ").trim();
-    if (!tone) {
-      await ctx.reply("Usage: /set_tone professional|friendly|expert");
+    const session = draftSessions.get(userId);
+    const activeId = session?.activeDraftContentId;
+    if (!activeId) {
+      await ctx.reply("Активного draft нет. Отправьте фото/видео или используйте /newpost.");
       return;
     }
-    db.updateUserSetting(userId, "tone", tone);
-    await ctx.reply(`Tone updated to: ${tone}`);
-  });
-
-  bot.command("set_language", async (ctx) => {
-    const userId = getUserId(ctx);
-    if (!userId) return;
-    const language = ctx.message.text.split(" ")[1]?.trim().toLowerCase();
-    if (language !== "ru" && language !== "en") {
-      await ctx.reply("Usage: /set_language ru|en");
-      return;
-    }
-    db.updateUserSetting(userId, "language", language);
-    await ctx.reply(`Language updated to: ${language}`);
-  });
-
-  bot.command("connect_instagram", async (ctx) => {
-    const userId = getUserId(ctx);
-    if (!userId) return;
-    const accountId = ctx.message.text.split(" ")[1]?.trim();
-    if (!accountId) {
-      await ctx.reply("Usage: /connect_instagram <instagram_business_account_id>");
-      return;
-    }
-    db.setInstagramAccountId(userId, accountId);
-    await ctx.reply("Instagram account id saved.");
-  });
-
-  bot.command("drafts", async (ctx) => {
-    const userId = getUserId(ctx);
-    if (!userId) return;
-    const drafts = db.listDrafts(userId);
-    if (!drafts.length) {
-      await ctx.reply("No drafts yet.");
-      return;
-    }
+    const draft = db.getGeneratedContentByIdForTelegramUser(activeId, userId);
     await ctx.reply(
-      drafts
-        .map((d) => `#${d.id} • ${d.content_type} • ${d.status} • ${d.created_at}`)
-        .join("\n")
+      [`Активный draft #${draft.id}`, "", "Текст, который будет опубликован в Instagram:", draft.final_instagram_caption ?? ""].join("\n"),
+      buildActionKeyboard(draft.id)
     );
   });
 
-  bot.command("scheduled", async (ctx) => {
+  bot.command("cancel", async (ctx) => {
     const userId = getUserId(ctx);
     if (!userId) return;
-    const schedules = db.listScheduled(userId);
-    if (!schedules.length) {
-      await ctx.reply("No scheduled posts.");
-      return;
+    const session = draftSessions.get(userId);
+    if (session?.activeDraftContentId) {
+      db.updateGeneratedStatus(session.activeDraftContentId, "failed");
     }
-    await ctx.reply(
-      schedules
-        .map((s) => `Schedule #${s.id} (draft #${s.generated_content_id}) • ${s.scheduled_at} • ${s.job_status}`)
-        .join("\n")
-    );
+    draftSessions.delete(userId);
+    await ctx.reply("Текущий draft отменён.");
   });
 
   bot.on("photo", async (ctx) => {
@@ -558,7 +856,7 @@ export function createTelegramBot(input: {
         storageUrlOriginal: uploaded.publicUrl
       });
       draftSessions.set(userId, { mediaItemId, mediaType: "image", description: ctx.message.caption });
-      await ctx.reply("Фото получено и загружено в storage. Отправьте текстовое описание для поста.");
+      await ctx.reply("Фото получено. Теперь отправьте описание, и я подготовлю контент.");
     } catch (error) {
       const appError = toAppError(error, "Photo processing failed");
       await ctx.reply(`Ошибка обработки фото: ${appError.message}`);
@@ -592,7 +890,7 @@ export function createTelegramBot(input: {
         storageUrlOriginal: uploaded.publicUrl
       });
       draftSessions.set(userId, { mediaItemId, mediaType: "video", description: ctx.message.caption });
-      await ctx.reply("Видео получено и загружено в storage. Отправьте текстовое описание для контента.");
+      await ctx.reply("Видео получено. Теперь отправьте описание для контента.");
     } catch (error) {
       const appError = toAppError(error, "Video processing failed");
       await ctx.reply(`Ошибка обработки видео: ${appError.message}`);
@@ -603,30 +901,33 @@ export function createTelegramBot(input: {
     const userId = getUserId(ctx);
     if (!userId) return;
     const text = ctx.message.text.trim();
-    if (text.startsWith("/")) {
-      return;
-    }
+    if (text.startsWith("/")) return;
 
     try {
       const session = draftSessions.get(userId);
-      if (!session) {
-        await ctx.reply("Сначала отправьте фото или видео.");
-        return;
-      }
-
-      if (session.awaitingScheduleForContentId) {
+      if (session?.awaitingScheduleForContentId) {
         const parsed = dayjs(text);
         if (!parsed.isValid()) {
           await ctx.reply("Неверный формат даты. Пример: 2026-05-24 14:30");
           return;
         }
-
         const contentId = session.awaitingScheduleForContentId;
         db.getGeneratedContentByIdForTelegramUser(contentId, userId);
         workflowService.approveDraft(contentId);
         workflowService.scheduleDraft(contentId, parsed.toISOString());
-        draftSessions.delete(userId);
+        session.awaitingScheduleForContentId = undefined;
+        draftSessions.set(userId, session);
         await ctx.reply("Публикация запланирована.");
+        return;
+      }
+
+      if (session?.activeDraftContentId) {
+        await handleDraftInstruction(ctx, userId, session.activeDraftContentId, text);
+        return;
+      }
+
+      if (!session) {
+        await handleAssistantChat(ctx, userId, text);
         return;
       }
 
@@ -681,7 +982,7 @@ export function createTelegramBot(input: {
     const inputSafety = safetyService.analyzeText(session.description);
     if (inputSafety.hasUnsafeClaims) {
       await ctx.reply(
-        `Внимание: ${inputSafety.warningMessage}\nНайдены триггеры: ${inputSafety.blockedTerms.join(", ")}\nПредложение: ${inputSafety.saferTextSuggestion}`
+        `Внимание: ${inputSafety.warningMessage}\nНайдены триггеры: ${inputSafety.blockedTerms.join(", ")}`
       );
     }
 
@@ -708,7 +1009,10 @@ export function createTelegramBot(input: {
         storyText: generated.storyText,
         reelIdea: generated.reelIdea,
         riskWarning: generated.riskWarning,
-        safeRewriteHint: generated.safeRewriteHint
+        safeRewriteHint: generated.safeRewriteHint,
+        visualTitle: generated.visualTitle,
+        visualSubtitle: generated.visualSubtitle,
+        designHint: generated.designHint
       });
 
       const media = db.getMediaItemById(session.mediaItemId);
@@ -721,6 +1025,7 @@ export function createTelegramBot(input: {
 
       await sendDraftPreview({
         ctx,
+        userId,
         contentId,
         media,
         payload: {
@@ -730,6 +1035,10 @@ export function createTelegramBot(input: {
           hashtags: generated.hashtags,
           cta: generated.cta,
           storyText: generated.storyText,
+          visualTitle: generated.visualTitle,
+          visualSubtitle: generated.visualSubtitle,
+          designHint: generated.designHint,
+          bulletPoints: generated.bulletPoints,
           reelIdea: generated.reelIdea,
           riskWarning: generated.riskWarning,
           safeRewriteHint: generated.safeRewriteHint
@@ -750,6 +1059,13 @@ export function createTelegramBot(input: {
       db.getGeneratedContentByIdForTelegramUser(contentId, userId);
       workflowService.approveDraft(contentId);
       const result = await workflowService.publishDraftNow(contentId);
+      if (result.success) {
+        const session = draftSessions.get(userId);
+        if (session?.activeDraftContentId === contentId) {
+          session.activeDraftContentId = undefined;
+          draftSessions.set(userId, session);
+        }
+      }
       await ctx.reply(result.success ? "Published successfully" : `Ошибка публикации: ${result.message}`);
     } catch (error) {
       const appError = toAppError(error, "Approve/publish failed");
@@ -757,7 +1073,7 @@ export function createTelegramBot(input: {
     }
   });
 
-  bot.action(/^regenerate(?:_text)?:(\d+)$/, async (ctx) => {
+  bot.action(/^regenerate_text:(\d+)$/, async (ctx) => {
     const userId = getUserId(ctx);
     if (!userId) return;
     const contentId = parseActionContentId(ctx.match[1]);
@@ -789,6 +1105,9 @@ export function createTelegramBot(input: {
         hashtags: generated.hashtags,
         cta: generated.cta,
         storyText: generated.storyText,
+        visualTitle: generated.visualTitle,
+        visualSubtitle: generated.visualSubtitle,
+        designHint: generated.designHint,
         reelIdea: generated.reelIdea,
         riskWarning: generated.riskWarning,
         safeRewriteHint: generated.safeRewriteHint
@@ -796,6 +1115,7 @@ export function createTelegramBot(input: {
       await ctx.answerCbQuery();
       await sendDraftPreview({
         ctx,
+        userId,
         contentId: newContentId,
         media,
         payload: {
@@ -805,13 +1125,17 @@ export function createTelegramBot(input: {
           hashtags: generated.hashtags,
           cta: generated.cta,
           storyText: generated.storyText,
+          visualTitle: generated.visualTitle,
+          visualSubtitle: generated.visualSubtitle,
+          designHint: generated.designHint,
+          bulletPoints: generated.bulletPoints,
           reelIdea: generated.reelIdea,
           riskWarning: generated.riskWarning,
           safeRewriteHint: generated.safeRewriteHint
         }
       });
     } catch (error) {
-      const appError = toAppError(error, "Regenerate failed");
+      const appError = toAppError(error, "Regenerate text failed");
       await ctx.answerCbQuery();
       await ctx.reply(`Ошибка регенерации: ${appError.message}`);
     }
@@ -830,24 +1154,120 @@ export function createTelegramBot(input: {
       await ctx.answerCbQuery("Design regenerating...");
       await sendDraftPreview({
         ctx,
+        userId,
         contentId: draft.id,
         media,
-        payload: {
-          contentType: draft.content_type,
-          language: draft.language,
-          captions: parseJsonStringArray(draft.captions_json),
-          hashtags: parseJsonStringArray(draft.hashtags_json),
-          cta: draft.cta,
-          storyText: draft.story_text,
-          reelIdea: draft.reel_idea,
-          riskWarning: draft.risk_warning,
-          safeRewriteHint: draft.safe_rewrite_hint
-        }
+        payload: getDraftPayload(draft)
       });
     } catch (error) {
       const appError = toAppError(error, "Regenerate design failed");
       await ctx.answerCbQuery();
       await ctx.reply(`Ошибка regenerate design: ${appError.message}`);
+    }
+  });
+
+  bot.action(/^change_style:(\d+)$/, async (ctx) => {
+    const userId = getUserId(ctx);
+    if (!userId) return;
+    const contentId = parseActionContentId(ctx.match[1]);
+    try {
+      db.getGeneratedContentByIdForTelegramUser(contentId, userId);
+      await ctx.answerCbQuery();
+      await ctx.reply("Выберите стиль:", buildStyleKeyboard(contentId));
+    } catch (error) {
+      const appError = toAppError(error, "Style chooser failed");
+      await ctx.answerCbQuery();
+      await ctx.reply(`Ошибка стиля: ${appError.message}`);
+    }
+  });
+
+  bot.action(/^stylepick:(\d+):(clean_light|premium_card|equipment_focus|announcement|educational|minimal_storylike|split_layout|full_bleed_blur)$/, async (ctx) => {
+    const userId = getUserId(ctx);
+    if (!userId) return;
+    const contentId = parseActionContentId(ctx.match[1]);
+    const variant = ctx.match[2] as MediaDesignVariant;
+    try {
+      const draft = db.getGeneratedContentByIdForTelegramUser(contentId, userId);
+      const media = db.getMediaItemById(draft.media_item_id);
+      if (!media) {
+        throw new AppError("Media not found", { code: "NOT_FOUND", statusCode: 404 });
+      }
+      await ctx.answerCbQuery(`Style: ${STYLE_LABELS[variant]}`);
+      await sendDraftPreview({
+        ctx,
+        userId,
+        contentId: draft.id,
+        media,
+        payload: getDraftPayload(draft),
+        preferredStyle: variant
+      });
+    } catch (error) {
+      const appError = toAppError(error, "Style apply failed");
+      await ctx.answerCbQuery();
+      await ctx.reply(`Ошибка применения стиля: ${appError.message}`);
+    }
+  });
+
+  bot.action(/^caption_shorter:(\d+)$/, async (ctx) => {
+    const userId = getUserId(ctx);
+    if (!userId) return;
+    const contentId = parseActionContentId(ctx.match[1]);
+    try {
+      const draft = db.getGeneratedContentByIdForTelegramUser(contentId, userId);
+      const shortened = shortenCaptionText(draft.final_instagram_caption ?? draft.selected_caption ?? "");
+      db.updateFinalCaptionAndHashtags({
+        contentId: draft.id,
+        finalCaption: shortened,
+        hashtags: parseJsonStringArray(draft.hashtags_json)
+      });
+      await ctx.answerCbQuery();
+      await ctx.reply(["Текст, который будет опубликован в Instagram:", shortened].join("\n"), buildActionKeyboard(draft.id));
+    } catch (error) {
+      const appError = toAppError(error, "Caption shorten failed");
+      await ctx.answerCbQuery();
+      await ctx.reply(`Ошибка caption: ${appError.message}`);
+    }
+  });
+
+  bot.action(/^caption_professional:(\d+)$/, async (ctx) => {
+    const userId = getUserId(ctx);
+    if (!userId) return;
+    const contentId = parseActionContentId(ctx.match[1]);
+    try {
+      const draft = db.getGeneratedContentByIdForTelegramUser(contentId, userId);
+      const updated = makeCaptionMoreProfessional(draft.final_instagram_caption ?? draft.selected_caption ?? "");
+      db.updateFinalCaptionAndHashtags({
+        contentId: draft.id,
+        finalCaption: updated,
+        hashtags: parseJsonStringArray(draft.hashtags_json)
+      });
+      await ctx.answerCbQuery();
+      await ctx.reply(["Текст, который будет опубликован в Instagram:", updated].join("\n"), buildActionKeyboard(draft.id));
+    } catch (error) {
+      const appError = toAppError(error, "Caption style failed");
+      await ctx.answerCbQuery();
+      await ctx.reply(`Ошибка caption: ${appError.message}`);
+    }
+  });
+
+  bot.action(/^caption_nohashtags:(\d+)$/, async (ctx) => {
+    const userId = getUserId(ctx);
+    if (!userId) return;
+    const contentId = parseActionContentId(ctx.match[1]);
+    try {
+      const draft = db.getGeneratedContentByIdForTelegramUser(contentId, userId);
+      const updated = removeHashtagsFromCaption(draft.final_instagram_caption ?? draft.selected_caption ?? "");
+      db.updateFinalCaptionAndHashtags({
+        contentId: draft.id,
+        finalCaption: updated,
+        hashtags: []
+      });
+      await ctx.answerCbQuery();
+      await ctx.reply(["Текст, который будет опубликован в Instagram:", updated].join("\n"), buildActionKeyboard(draft.id));
+    } catch (error) {
+      const appError = toAppError(error, "Caption hashtag update failed");
+      await ctx.answerCbQuery();
+      await ctx.reply(`Ошибка caption: ${appError.message}`);
     }
   });
 
@@ -859,13 +1279,12 @@ export function createTelegramBot(input: {
       const draft = db.getGeneratedContentByIdForTelegramUser(contentId, userId);
       db.setUseOriginalMedia(contentId, true);
       await ctx.answerCbQuery();
-      const finalCaption = draft.final_instagram_caption ?? draft.selected_caption ?? "";
       await ctx.reply(
         [
           "Будет опубликовано исходное фото без дизайна.",
           "",
           "Текст, который будет опубликован в Instagram:",
-          finalCaption
+          draft.final_instagram_caption ?? draft.selected_caption ?? ""
         ].join("\n"),
         buildActionKeyboard(contentId)
       );
@@ -901,7 +1320,11 @@ export function createTelegramBot(input: {
     try {
       db.getGeneratedContentByIdForTelegramUser(contentId, userId);
       db.updateGeneratedStatus(contentId, "failed");
-      draftSessions.delete(userId);
+      const session = draftSessions.get(userId);
+      if (session?.activeDraftContentId === contentId) {
+        session.activeDraftContentId = undefined;
+        draftSessions.set(userId, session);
+      }
       await ctx.answerCbQuery();
       await ctx.reply("Операция отменена.");
     } catch (error) {

@@ -26,6 +26,11 @@ ${input.safetyNotes.length ? `- safety alerts from precheck: ${input.safetyNotes
 Output JSON object with keys:
 {
   "captions": ["...", "...", "..."],
+  "post_caption": "...",
+  "visual_title": "...",
+  "visual_subtitle": "...",
+  "design_hint": "...",
+  "bullet_points": ["...", "..."],
   "hashtags": ["#...", "#..."],
   "cta": "...",
   "story_text": "...",
@@ -36,6 +41,11 @@ Output JSON object with keys:
 
 Rules:
 - captions: 2-3 options, concise and medically careful;
+- post_caption: one final post caption option for publishing;
+- visual_title: short on-image headline, 42-52 chars max;
+- visual_subtitle: optional short secondary line;
+- design_hint: one of clean_light, premium_card, equipment_focus, announcement, educational, minimal_storylike, split_layout, full_bleed_blur;
+- bullet_points: optional 2-3 short educational bullets only when relevant;
 - hashtags: 8-15 tags, no spam;
 - cta: soft and ethical (consultation / appointment / check-up), never manipulative;
 - if content type is reel and video exists, provide concrete reel_idea;

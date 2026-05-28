@@ -4,7 +4,9 @@ import path from "node:path";
 import { createTelegramBot } from "./bot/bot.js";
 import { env } from "./config/env.js";
 import { AppDatabase } from "./db/database.js";
+import { AssistantCommandService } from "./services/assistant-command.service.js";
 import { ContentWorkflowService } from "./services/content-workflow.service.js";
+import { DesignSelectionService } from "./services/design-selection.service.js";
 import { InstagramService } from "./services/instagram.service.js";
 import { MediaDesignService } from "./services/media-design.service.js";
 import { MediaValidationService } from "./services/media-validation.service.js";
@@ -54,6 +56,8 @@ async function bootstrap(): Promise<void> {
   const storageService = new StorageService();
   const mediaDesignService = new MediaDesignService();
   const videoDesignService = new VideoDesignService();
+  const designSelectionService = new DesignSelectionService();
+  const assistantCommandService = new AssistantCommandService();
   const aiService = new OpenAiService();
   const instagramService = new InstagramService();
   const workflowService = new ContentWorkflowService(
@@ -76,6 +80,8 @@ async function bootstrap(): Promise<void> {
     storageService,
     mediaDesignService,
     videoDesignService,
+    designSelectionService,
+    assistantCommandService,
     rateLimitService
   });
 

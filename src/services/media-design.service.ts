@@ -8,14 +8,17 @@ import { Language } from "../types/domain.js";
 import { AppError } from "../types/errors.js";
 import { ensureDir } from "../utils/fs.js";
 import { logger } from "../utils/logger.js";
+import {
+  MEDIA_DESIGN_TEMPLATE_IDS,
+  getMediaDesignTemplate
+} from "./media-design/templates/index.js";
+import { MediaDesignTemplate, MediaDesignTemplateId } from "./media-design/templates/types.js";
 
 const CANVAS_WIDTH = 1080;
 const CANVAS_HEIGHT = 1350;
-const OUTER_PADDING = 64;
-const DESIGN_VERSION = "photo-v3";
+const DESIGN_VERSION = "photo-v4";
 const TITLE_LINE_HEIGHT_RATIO = 1.12;
 const TITLE_FONT_SIZE_STEPS = [56, 54, 52, 50, 48];
-const IMAGE_AREA_MODE = "contain_full_photo";
 const MIN_CENTER_VARIANCE = 1.5;
 
 const DANGEROUS_PATTERNS = [
@@ -43,10 +46,6 @@ const EN_SAFE_TITLES = [
   "Modern diagnostic capabilities"
 ];
 
-export const MEDIA_DESIGN_VARIANTS = ["clean_light", "premium_card", "equipment_focus"] as const;
-export type MediaDesignVariant = (typeof MEDIA_DESIGN_VARIANTS)[number];
-export type MediaDesignImageSource = Buffer | string;
-
 type WrapResult = {
   lines: string[];
   truncated: boolean;
@@ -59,22 +58,6 @@ type TitleLayout = {
   wasTruncated: boolean;
 };
 
-type VariantStyle = {
-  gradientStart: string;
-  gradientEnd: string;
-  topCardFill: string;
-  topCardStroke: string;
-  topCardHeight: number;
-  bottomCardFill: string;
-  bottomCardStroke: string;
-  bottomCardHeight: number;
-  imageShadowOpacity: number;
-  titleColor: string;
-  brandColor: string;
-  handleColor: string;
-  disclaimerColor: string;
-};
-
 type LoadedImage = {
   buffer: Buffer;
   kind: "buffer" | "path" | "url";
@@ -85,52 +68,61 @@ type LoadedImage = {
   height: number;
 };
 
-const VARIANT_STYLES: Record<MediaDesignVariant, VariantStyle> = {
-  clean_light: {
-    gradientStart: "#f5f9fd",
-    gradientEnd: "#eef5fb",
-    topCardFill: "#ffffff",
-    topCardStroke: "#dbe7f3",
-    topCardHeight: 150,
-    bottomCardFill: "#ffffff",
-    bottomCardStroke: "#dbe7f3",
-    bottomCardHeight: 160,
-    imageShadowOpacity: 0.12,
-    titleColor: "#142e47",
-    brandColor: "#13314d",
-    handleColor: "#2b6699",
-    disclaimerColor: "#5f7288"
-  },
-  premium_card: {
-    gradientStart: "#f8fbff",
-    gradientEnd: "#edf3fa",
-    topCardFill: "#ffffff",
-    topCardStroke: "#d4e1ef",
-    topCardHeight: 156,
-    bottomCardFill: "#fbfdff",
-    bottomCardStroke: "#d4e1ef",
-    bottomCardHeight: 170,
-    imageShadowOpacity: 0.14,
-    titleColor: "#122a41",
-    brandColor: "#102d49",
-    handleColor: "#255f92",
-    disclaimerColor: "#566d86"
-  },
-  equipment_focus: {
-    gradientStart: "#f3f8fe",
-    gradientEnd: "#e9f2fa",
-    topCardFill: "#ffffff",
-    topCardStroke: "#d1deec",
-    topCardHeight: 144,
-    bottomCardFill: "#ffffff",
-    bottomCardStroke: "#d1deec",
-    bottomCardHeight: 158,
-    imageShadowOpacity: 0.1,
-    titleColor: "#122f4b",
-    brandColor: "#113049",
-    handleColor: "#2d6797",
-    disclaimerColor: "#5d738a"
-  }
+type BottomTypography = {
+  brandSize: number;
+  handleSize: number;
+  disclaimerSize: number;
+  iconEnabled: boolean;
+  disclaimerText: string;
+};
+
+export const MEDIA_DESIGN_VARIANTS = MEDIA_DESIGN_TEMPLATE_IDS;
+export type MediaDesignVariant = MediaDesignTemplateId;
+export type MediaDesignImageSource = Buffer | string;
+
+type CreateBrandedPostImageInput = {
+  sourcePath?: string;
+  sourceImage?: MediaDesignImageSource;
+  language: Language;
+  title?: string | null;
+  subtitle?: string | null;
+  bulletPoints?: string[];
+  brand?: string;
+  handle?: string;
+  disclaimer?: string;
+  outputPath?: string;
+  variant?: MediaDesignTemplateId;
+};
+
+type CreateBrandedPostImageResult = {
+  outputPath: string;
+  designVersion: string;
+  designVariant: MediaDesignTemplateId;
+  imageAreaMode: "contain_full_photo";
+  titleUsed: string;
+  titleLines: string[];
+  titleWasTruncated: boolean;
+  source: {
+    inputKind: "buffer" | "path" | "url";
+    sourceReference: string;
+    pathExists: boolean;
+    fileSize: number;
+    width: number;
+    height: number;
+  };
+  output: {
+    width: number;
+    height: number;
+    fileSize: number;
+    centerVariance: number;
+  };
+  layoutMetadata: {
+    mode: string;
+    topZone: { x: number; y: number; width: number; height: number };
+    imageZone: { x: number; y: number; width: number; height: number };
+    bottomZone: { x: number; y: number; width: number; height: number };
+    iconEnabled: boolean;
+  };
 };
 
 function escapeXml(value: string): string {
@@ -202,7 +194,6 @@ function wrapText(input: { text: string; maxWidth: number; fontSize: number; max
   for (let index = 0; index < words.length; index += 1) {
     const word = words[index];
     const candidate = currentLine ? `${currentLine} ${word}` : word;
-
     if (estimateTextWidth(candidate, input.fontSize) <= safeWidth) {
       currentLine = candidate;
       continue;
@@ -250,9 +241,9 @@ function wrapText(input: { text: string; maxWidth: number; fontSize: number; max
   };
 }
 
-function pickFallbackTitle(language: Language, variant: MediaDesignVariant): string {
+function pickFallbackTitle(language: Language, variant: MediaDesignTemplateId): string {
   const source = language === "en" ? EN_SAFE_TITLES : RU_SAFE_TITLES;
-  const variantIndex = MEDIA_DESIGN_VARIANTS.indexOf(variant);
+  const variantIndex = MEDIA_DESIGN_TEMPLATE_IDS.indexOf(variant);
   const safeIndex = variantIndex >= 0 ? variantIndex : 0;
   return source[safeIndex % source.length];
 }
@@ -260,7 +251,7 @@ function pickFallbackTitle(language: Language, variant: MediaDesignVariant): str
 function resolveTitleLayout(input: {
   rawTitle: string | null | undefined;
   language: Language;
-  variant: MediaDesignVariant;
+  variant: MediaDesignTemplateId;
   maxWidth: number;
   maxHeight: number;
 }): TitleLayout {
@@ -293,118 +284,39 @@ function resolveTitleLayout(input: {
   };
 
   const primary = tryLayout(initialTitle);
-  if (primary) {
-    return primary;
-  }
+  if (primary) return primary;
 
   const fallback = pickFallbackTitle(input.language, input.variant);
   const fallbackLayout = tryLayout(fallback);
-  if (fallbackLayout) {
-    return {
-      ...fallbackLayout,
-      wasTruncated: true
-    };
-  }
+  if (fallbackLayout) return { ...fallbackLayout, wasTruncated: true };
 
-  const forcedFontSize = 48;
-  const wrapped = wrapText({
-    text: fallback,
-    maxWidth: input.maxWidth,
-    fontSize: forcedFontSize,
-    maxLines: 2
-  });
   return {
     title: fallback,
-    lines: wrapped.lines.slice(0, 2),
-    fontSize: forcedFontSize,
+    lines: [fitWithEllipsis(fallback, input.maxWidth, 48)],
+    fontSize: 48,
     wasTruncated: true
   };
 }
 
-function buildBaseBackgroundSvg(variant: MediaDesignVariant): Buffer {
-  const style = VARIANT_STYLES[variant];
-  const svg = `
-  <svg width="${CANVAS_WIDTH}" height="${CANVAS_HEIGHT}" xmlns="http://www.w3.org/2000/svg">
-    <defs>
-      <linearGradient id="bgGradient" x1="0" y1="0" x2="0" y2="1">
-        <stop offset="0%" stop-color="${style.gradientStart}" />
-        <stop offset="100%" stop-color="${style.gradientEnd}" />
-      </linearGradient>
-    </defs>
-    <rect x="0" y="0" width="${CANVAS_WIDTH}" height="${CANVAS_HEIGHT}" fill="url(#bgGradient)" />
-  </svg>`;
-  return Buffer.from(svg);
-}
-
-function buildChromeSvg(input: {
-  variant: MediaDesignVariant;
-  titleLines: string[];
-  titleFontSize: number;
-  brand: string;
-  handle: string;
-  disclaimer: string;
-}): { svg: Buffer; imageFrame: { x: number; y: number; width: number; height: number } } {
-  const style = VARIANT_STYLES[input.variant];
-  const innerX = OUTER_PADDING;
-  const innerY = OUTER_PADDING;
-  const innerW = CANVAS_WIDTH - OUTER_PADDING * 2;
-
-  const topCardY = innerY;
-  const topCardH = style.topCardHeight;
-  const gapTopToImage = 20;
-  const gapImageToBottom = 20;
-  const bottomCardY = CANVAS_HEIGHT - OUTER_PADDING - style.bottomCardHeight;
-  const imageY = topCardY + topCardH + gapTopToImage;
-  const imageH = bottomCardY - gapImageToBottom - imageY;
-
-  const titleStartX = innerX + 40;
-  const tagY = topCardY + 38;
-  const titleStartY = topCardY + 92;
-  const titleLineHeight = Math.round(input.titleFontSize * TITLE_LINE_HEIGHT_RATIO);
-
-  const brand = escapeXml(input.brand);
-  const handle = escapeXml(input.handle);
-  const disclaimer = escapeXml(input.disclaimer);
-  const titleLinesSvg = input.titleLines
-    .map(
-      (line, index) =>
-        `<text x="${titleStartX}" y="${titleStartY + index * titleLineHeight}" font-size="${input.titleFontSize}" font-family="Arial, Helvetica, sans-serif" font-weight="700" fill="${style.titleColor}">${escapeXml(line)}</text>`
-    )
-    .join("");
-
-  const svg = `
-  <svg width="${CANVAS_WIDTH}" height="${CANVAS_HEIGHT}" xmlns="http://www.w3.org/2000/svg">
-    <defs>
-      <filter id="softShadow" x="-20%" y="-20%" width="140%" height="140%">
-        <feDropShadow dx="0" dy="10" stdDeviation="14" flood-color="#15324d" flood-opacity="${style.imageShadowOpacity}" />
-      </filter>
-    </defs>
-
-    <rect x="${innerX}" y="${topCardY}" rx="28" ry="28" width="${innerW}" height="${topCardH}" fill="${style.topCardFill}" stroke="${style.topCardStroke}" stroke-width="2" />
-    <text x="${titleStartX}" y="${tagY}" font-size="26" font-family="Arial, Helvetica, sans-serif" font-weight="600" fill="${style.handleColor}">MC Clinic Medical</text>
-    ${titleLinesSvg}
-
-    <rect x="${innerX}" y="${imageY}" rx="28" ry="28" width="${innerW}" height="${imageH}" fill="none" stroke="#dfe9f3" stroke-width="2" filter="url(#softShadow)" />
-
-    <rect x="${innerX}" y="${bottomCardY}" rx="26" ry="26" width="${innerW}" height="${style.bottomCardHeight}" fill="${style.bottomCardFill}" stroke="${style.bottomCardStroke}" stroke-width="2" />
-    <text x="${innerX + 38}" y="${bottomCardY + 58}" font-size="36" font-family="Arial, Helvetica, sans-serif" font-weight="700" fill="${style.brandColor}">${brand}</text>
-    <text x="${innerX + 38}" y="${bottomCardY + 98}" font-size="30" font-family="Arial, Helvetica, sans-serif" font-weight="600" fill="${style.handleColor}">${handle}</text>
-    <text x="${innerX + 38}" y="${bottomCardY + 136}" font-size="24" font-family="Arial, Helvetica, sans-serif" fill="${style.disclaimerColor}">${disclaimer}</text>
-
-    <circle cx="${innerX + innerW - 88}" cy="${bottomCardY + 72}" r="30" fill="#e8f1fb" stroke="#b8cee2" />
-    <rect x="${innerX + innerW - 92}" y="${bottomCardY + 54}" width="8" height="36" rx="4" fill="#2f6a9a" />
-    <rect x="${innerX + innerW - 106}" y="${bottomCardY + 68}" width="36" height="8" rx="4" fill="#2f6a9a" />
-  </svg>`;
-
-  return {
-    svg: Buffer.from(svg),
-    imageFrame: {
-      x: innerX,
-      y: imageY,
-      width: innerW,
-      height: imageH
+function validateTemplate(template: MediaDesignTemplate): void {
+  const zones = [template.topZone, template.imageZone, template.bottomZone];
+  for (const zone of zones) {
+    if (zone.x < 0 || zone.y < 0 || zone.x + zone.width > CANVAS_WIDTH || zone.y + zone.height > CANVAS_HEIGHT) {
+      throw new AppError(`Media design template ${template.id} has invalid zone boundaries`, {
+        code: "VALIDATION_ERROR",
+        statusCode: 500
+      });
     }
-  };
+  }
+
+  const verticalGapA = template.imageZone.y - (template.topZone.y + template.topZone.height);
+  const verticalGapB = template.bottomZone.y - (template.imageZone.y + template.imageZone.height);
+  if (template.mode !== "split_layout" && (verticalGapA < template.minSpacing || verticalGapB < template.minSpacing)) {
+    throw new AppError(`Media design template ${template.id} violates min spacing`, {
+      code: "VALIDATION_ERROR",
+      statusCode: 500
+    });
+  }
 }
 
 function roundedMask(width: number, height: number, radius: number): Buffer {
@@ -428,9 +340,7 @@ export async function computePixelVariance(input: {
   const metadata = await base.metadata();
   const width = metadata.width ?? 0;
   const height = metadata.height ?? 0;
-  if (!width || !height) {
-    return 0;
-  }
+  if (!width || !height) return 0;
 
   let pipeline = sharp(input.image).ensureAlpha();
   if (input.region) {
@@ -445,9 +355,7 @@ export async function computePixelVariance(input: {
 
   const { data, info } = await pipeline.raw().toBuffer({ resolveWithObject: true });
   const channels = info.channels;
-  if (channels < 3 || data.length === 0) {
-    return 0;
-  }
+  if (channels < 3 || data.length === 0) return 0;
 
   const luminance: number[] = [];
   for (let index = 0; index < data.length; index += channels) {
@@ -463,51 +371,98 @@ export async function computePixelVariance(input: {
   return Number(variance.toFixed(4));
 }
 
-type CreateBrandedPostImageInput = {
-  sourcePath?: string;
-  sourceImage?: MediaDesignImageSource;
-  language: Language;
-  title?: string | null;
-  brand?: string;
-  handle?: string;
-  disclaimer?: string;
-  outputPath?: string;
-  variant?: MediaDesignVariant;
-};
+function buildBackgroundSvg(template: MediaDesignTemplate): Buffer {
+  const svg = `
+  <svg width="${CANVAS_WIDTH}" height="${CANVAS_HEIGHT}" xmlns="http://www.w3.org/2000/svg">
+    <defs>
+      <linearGradient id="bgGradient" x1="0" y1="0" x2="0" y2="1">
+        <stop offset="0%" stop-color="${template.backgroundGradient.start}" />
+        <stop offset="100%" stop-color="${template.backgroundGradient.end}" />
+      </linearGradient>
+    </defs>
+    <rect x="0" y="0" width="${CANVAS_WIDTH}" height="${CANVAS_HEIGHT}" fill="url(#bgGradient)" />
+  </svg>`;
+  return Buffer.from(svg);
+}
 
-type CreateBrandedPostImageResult = {
-  outputPath: string;
-  designVersion: string;
-  designVariant: MediaDesignVariant;
-  imageAreaMode: typeof IMAGE_AREA_MODE;
-  titleUsed: string;
-  titleLines: string[];
-  titleWasTruncated: boolean;
-  source: {
-    inputKind: "buffer" | "path" | "url";
-    sourceReference: string;
-    pathExists: boolean;
-    fileSize: number;
-    width: number;
-    height: number;
+function buildTextLinesSvg(input: {
+  lines: string[];
+  x: number;
+  y: number;
+  lineHeight: number;
+  fontSize: number;
+  color: string;
+  align: "left" | "center";
+  width: number;
+}): string {
+  const anchor = input.align === "center" ? "middle" : "start";
+  const baseX = input.align === "center" ? input.x + Math.floor(input.width / 2) : input.x;
+  return input.lines
+    .map((line, index) => {
+      const y = input.y + index * input.lineHeight;
+      return `<text x="${baseX}" y="${y}" text-anchor="${anchor}" font-size="${input.fontSize}" font-family="Arial, Helvetica, sans-serif" font-weight="700" fill="${input.color}">${escapeXml(line)}</text>`;
+    })
+    .join("");
+}
+
+function resolveBottomTypography(input: {
+  template: MediaDesignTemplate;
+  brand: string;
+  handle: string;
+  disclaimer: string;
+}): BottomTypography {
+  let brandSize = 36;
+  let handleSize = 30;
+  let disclaimerSize = 24;
+  let iconEnabled = input.template.showMedicalCrossByDefault;
+
+  const cardPadding = 32;
+  const iconZoneWidth = 92;
+  const textWidthFor = (icon: boolean) =>
+    input.template.bottomZone.width - cardPadding * 2 - (icon ? iconZoneWidth : 0);
+
+  const doesOverflow = (icon: boolean) => {
+    const textWidth = textWidthFor(icon);
+    const maxLineWidth = Math.max(
+      estimateTextWidth(input.brand, brandSize),
+      estimateTextWidth(input.handle, handleSize),
+      estimateTextWidth(input.disclaimer, disclaimerSize)
+    );
+    return maxLineWidth > textWidth;
   };
-  output: {
-    width: number;
-    height: number;
-    fileSize: number;
-    centerVariance: number;
+
+  if (iconEnabled && doesOverflow(true)) {
+    iconEnabled = false;
+  }
+
+  while (doesOverflow(iconEnabled) && (brandSize > 34 || handleSize > 28 || disclaimerSize > 22)) {
+    if (brandSize > 34) brandSize -= 1;
+    if (handleSize > 28) handleSize -= 1;
+    if (disclaimerSize > 22) disclaimerSize -= 1;
+  }
+
+  const disclaimerText = doesOverflow(iconEnabled)
+    ? fitWithEllipsis(input.disclaimer, textWidthFor(iconEnabled), disclaimerSize)
+    : input.disclaimer;
+
+  return {
+    brandSize,
+    handleSize,
+    disclaimerSize,
+    iconEnabled,
+    disclaimerText
   };
-};
+}
 
 export class MediaDesignService {
   private readonly serviceLogger = logger.child({ component: "media-design-service" });
   private variantCursor = 0;
 
-  private pickVariant(explicitVariant?: MediaDesignVariant): MediaDesignVariant {
+  private pickVariant(explicitVariant?: MediaDesignTemplateId): MediaDesignTemplateId {
     if (explicitVariant) {
       return explicitVariant;
     }
-    const next = MEDIA_DESIGN_VARIANTS[this.variantCursor % MEDIA_DESIGN_VARIANTS.length];
+    const next = MEDIA_DESIGN_TEMPLATE_IDS[this.variantCursor % MEDIA_DESIGN_TEMPLATE_IDS.length];
     this.variantCursor += 1;
     return next;
   }
@@ -600,7 +555,6 @@ export class MediaDesignService {
         statusCode: 400
       });
     }
-
     const buffer = await fsPromises.readFile(localPath);
     const metadata = await sharp(buffer).metadata();
     if (!metadata.width || !metadata.height) {
@@ -609,7 +563,6 @@ export class MediaDesignService {
         statusCode: 400
       });
     }
-
     return {
       buffer,
       kind: "path",
@@ -632,7 +585,9 @@ export class MediaDesignService {
 
     const loaded = await this.loadImageInput(sourceInput);
     const designVariant = this.pickVariant(input.variant);
-    const style = VARIANT_STYLES[designVariant];
+    const template = getMediaDesignTemplate(designVariant);
+    validateTemplate(template);
+
     const brand = input.brand ?? "MC Clinic Medical";
     const handle = input.handle ?? "@mc_clinic.du";
     const disclaimer = input.disclaimer ?? "Информация носит ознакомительный характер";
@@ -642,48 +597,30 @@ export class MediaDesignService {
       path.resolve(process.cwd(), "tmp", "processed-media", `post-${Date.now()}-${randomUUID()}.jpg`);
     await ensureDir(path.dirname(outputPath));
 
-    const chrome = buildChromeSvg({
-      variant: designVariant,
-      titleLines: [],
-      titleFontSize: 48,
-      brand,
-      handle,
-      disclaimer
-    });
     const titleLayout = resolveTitleLayout({
       rawTitle: input.title,
       language: input.language,
       variant: designVariant,
-      maxWidth: chrome.imageFrame.width - 88,
-      maxHeight: style.topCardHeight - 60
+      maxWidth: template.topZone.width - 72,
+      maxHeight: template.topZone.height - 40
     });
-    const resolvedChrome = buildChromeSvg({
-      variant: designVariant,
-      titleLines: titleLayout.lines,
-      titleFontSize: titleLayout.fontSize,
-      brand,
-      handle,
-      disclaimer
-    });
-
-    const imageArea = resolvedChrome.imageFrame;
-    const foregroundWidth = imageArea.width - 40;
-    const foregroundHeight = imageArea.height - 40;
 
     const blurredBackgroundBase = await sharp(loaded.buffer)
       .rotate()
-      .resize(imageArea.width, imageArea.height, { fit: "cover", position: "attention" })
-      .blur(16)
+      .resize(template.imageZone.width, template.imageZone.height, { fit: "cover", position: "attention" })
+      .blur(template.imageBlurStrength)
       .modulate({ brightness: 0.9, saturation: 1 })
       .png()
       .toBuffer();
     const blurredBackground = await applyRoundedCorners(
       blurredBackgroundBase,
-      imageArea.width,
-      imageArea.height,
-      28
+      template.imageZone.width,
+      template.imageZone.height,
+      template.imageZone.radius
     );
 
+    const foregroundWidth = template.imageZone.width - template.imageForegroundInset * 2;
+    const foregroundHeight = template.imageZone.height - template.imageForegroundInset * 2;
     const foregroundBase = await sharp(loaded.buffer)
       .rotate()
       .resize(foregroundWidth, foregroundHeight, {
@@ -694,6 +631,85 @@ export class MediaDesignService {
       .toBuffer();
     const foreground = await applyRoundedCorners(foregroundBase, foregroundWidth, foregroundHeight, 22);
 
+    const bottomTypography = resolveBottomTypography({
+      template,
+      brand,
+      handle,
+      disclaimer
+    });
+
+    const topTitleLineHeight = Math.round(titleLayout.fontSize * TITLE_LINE_HEIGHT_RATIO);
+    const topTitleY = template.topZone.y + 84;
+    const topTitleX = template.topZone.x + 34;
+    const topTagY = template.topZone.y + 40;
+    const textBlockX = template.bottomZone.x + 34;
+    const textBlockY = template.bottomZone.y + 52;
+    const iconX = template.bottomZone.x + template.bottomZone.width - 74;
+    const iconY = template.bottomZone.y + 44;
+
+    const bulletLines =
+      designVariant === "educational"
+        ? (input.bulletPoints ?? [])
+            .map((line) => sanitizeMedicalTitle(line))
+            .filter(Boolean)
+            .slice(0, 3)
+            .map((line) => fitWithEllipsis(line, template.bottomZone.width - 90, 24))
+        : [];
+
+    const bulletSvg = bulletLines
+      .map(
+        (line, index) =>
+          `<text x="${textBlockX}" y="${template.bottomZone.y + 162 + index * 34}" font-size="24" font-family="Arial, Helvetica, sans-serif" font-weight="500" fill="${template.palette.disclaimer}">• ${escapeXml(line)}</text>`
+      )
+      .join("");
+
+    const iconSvg = bottomTypography.iconEnabled
+      ? `<g><circle cx="${iconX}" cy="${iconY}" r="24" fill="#e7f1fb" stroke="#b8cee2" />
+         <rect x="${iconX - 3}" y="${iconY - 15}" width="6" height="30" rx="3" fill="#2f6a9a" />
+         <rect x="${iconX - 15}" y="${iconY - 3}" width="30" height="6" rx="3" fill="#2f6a9a" /></g>`
+      : "";
+
+    const overlaySvg = `
+    <svg width="${CANVAS_WIDTH}" height="${CANVAS_HEIGHT}" xmlns="http://www.w3.org/2000/svg">
+      <defs>
+        <filter id="softShadow" x="-20%" y="-20%" width="140%" height="140%">
+          <feDropShadow dx="0" dy="10" stdDeviation="12" flood-color="#15324d" flood-opacity="0.12" />
+        </filter>
+      </defs>
+      <rect x="${template.topZone.x}" y="${template.topZone.y}" rx="${template.topZone.radius}" ry="${template.topZone.radius}" width="${template.topZone.width}" height="${template.topZone.height}" fill="${template.palette.cardFill}" stroke="${template.palette.cardStroke}" stroke-width="2" />
+      <text x="${template.topZone.x + 34}" y="${topTagY}" font-size="24" font-family="Arial, Helvetica, sans-serif" font-weight="600" fill="${template.palette.tag}">MC Clinic Medical</text>
+      ${buildTextLinesSvg({
+        lines: titleLayout.lines,
+        x: topTitleX,
+        y: topTitleY,
+        lineHeight: topTitleLineHeight,
+        fontSize: titleLayout.fontSize,
+        color: template.palette.title,
+        align: template.titleAlign,
+        width: template.topZone.width - 68
+      })}
+
+      <rect x="${template.imageZone.x}" y="${template.imageZone.y}" rx="${template.imageZone.radius}" ry="${template.imageZone.radius}" width="${template.imageZone.width}" height="${template.imageZone.height}" fill="none" stroke="#d9e6f2" stroke-width="2" filter="url(#softShadow)" />
+
+      <rect x="${template.bottomZone.x}" y="${template.bottomZone.y}" rx="${template.bottomZone.radius}" ry="${template.bottomZone.radius}" width="${template.bottomZone.width}" height="${template.bottomZone.height}" fill="${template.palette.cardFill}" stroke="${template.palette.cardStroke}" stroke-width="2" />
+      <text x="${textBlockX}" y="${textBlockY}" font-size="${bottomTypography.brandSize}" font-family="Arial, Helvetica, sans-serif" font-weight="700" fill="${template.palette.brand}">${escapeXml(brand)}</text>
+      <text x="${textBlockX}" y="${textBlockY + 36}" font-size="${bottomTypography.handleSize}" font-family="Arial, Helvetica, sans-serif" font-weight="600" fill="${template.palette.handle}">${escapeXml(handle)}</text>
+      <text x="${textBlockX}" y="${textBlockY + 70}" font-size="${bottomTypography.disclaimerSize}" font-family="Arial, Helvetica, sans-serif" fill="${template.palette.disclaimer}">${escapeXml(bottomTypography.disclaimerText)}</text>
+      ${bulletSvg}
+      ${iconSvg}
+    </svg>`;
+
+    const baseLayer =
+      template.mode === "full_bleed"
+        ? await sharp(loaded.buffer)
+            .rotate()
+            .resize(CANVAS_WIDTH, CANVAS_HEIGHT, { fit: "cover", position: "attention" })
+            .blur(Math.max(template.imageBlurStrength, 18))
+            .modulate({ brightness: 0.72, saturation: 0.95 })
+            .png()
+            .toBuffer()
+        : buildBackgroundSvg(template);
+
     await sharp({
       create: {
         width: CANVAS_WIDTH,
@@ -703,10 +719,14 @@ export class MediaDesignService {
       }
     })
       .composite([
-        { input: buildBaseBackgroundSvg(designVariant), top: 0, left: 0 },
-        { input: blurredBackground, top: imageArea.y, left: imageArea.x },
-        { input: foreground, top: imageArea.y + 20, left: imageArea.x + 20 },
-        { input: resolvedChrome.svg, top: 0, left: 0 }
+        { input: baseLayer, top: 0, left: 0 },
+        { input: blurredBackground, top: template.imageZone.y, left: template.imageZone.x },
+        {
+          input: foreground,
+          top: template.imageZone.y + template.imageForegroundInset,
+          left: template.imageZone.x + template.imageForegroundInset
+        },
+        { input: Buffer.from(overlaySvg), top: 0, left: 0 }
       ])
       .jpeg({ quality: 93, mozjpeg: true })
       .toFile(outputPath);
@@ -716,27 +736,21 @@ export class MediaDesignService {
     const centerVariance = await computePixelVariance({
       image: outputPath,
       region: {
-        left: imageArea.x + Math.floor(imageArea.width * 0.2),
-        top: imageArea.y + Math.floor(imageArea.height * 0.2),
-        width: Math.floor(imageArea.width * 0.6),
-        height: Math.floor(imageArea.height * 0.6)
+        left: template.imageZone.x + Math.floor(template.imageZone.width * 0.2),
+        top: template.imageZone.y + Math.floor(template.imageZone.height * 0.2),
+        width: Math.floor(template.imageZone.width * 0.6),
+        height: Math.floor(template.imageZone.height * 0.6)
       }
     });
-
     if (centerVariance < MIN_CENTER_VARIANCE) {
       throw new AppError("Media design failed: rendered image area appears blank", {
         code: "VALIDATION_ERROR",
-        statusCode: 400,
-        details: {
-          centerVariance,
-          threshold: MIN_CENTER_VARIANCE
-        }
+        statusCode: 400
       });
     }
 
     this.serviceLogger.info("Media design completed", {
       designVariant,
-      imageAreaMode: IMAGE_AREA_MODE,
       sourceKind: loaded.kind,
       sourceWidth: loaded.width,
       sourceHeight: loaded.height,
@@ -749,7 +763,7 @@ export class MediaDesignService {
       outputPath,
       designVersion: `${DESIGN_VERSION}/${designVariant}`,
       designVariant,
-      imageAreaMode: IMAGE_AREA_MODE,
+      imageAreaMode: "contain_full_photo",
       titleUsed: titleLayout.title,
       titleLines: titleLayout.lines,
       titleWasTruncated: titleLayout.wasTruncated,
@@ -766,6 +780,28 @@ export class MediaDesignService {
         height: outputMeta.height ?? CANVAS_HEIGHT,
         fileSize: outputStat.size,
         centerVariance
+      },
+      layoutMetadata: {
+        mode: template.mode,
+        topZone: {
+          x: template.topZone.x,
+          y: template.topZone.y,
+          width: template.topZone.width,
+          height: template.topZone.height
+        },
+        imageZone: {
+          x: template.imageZone.x,
+          y: template.imageZone.y,
+          width: template.imageZone.width,
+          height: template.imageZone.height
+        },
+        bottomZone: {
+          x: template.bottomZone.x,
+          y: template.bottomZone.y,
+          width: template.bottomZone.width,
+          height: template.bottomZone.height
+        },
+        iconEnabled: bottomTypography.iconEnabled
       }
     };
   }

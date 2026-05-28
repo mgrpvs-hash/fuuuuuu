@@ -27,6 +27,11 @@ function parseOutput(text: string): GeneratedContentPayload {
 
   return {
     captions: parsed.captions,
+    postCaption: parsed.post_caption,
+    visualTitle: parsed.visual_title,
+    visualSubtitle: parsed.visual_subtitle,
+    designHint: parsed.design_hint,
+    bulletPoints: parsed.bullet_points,
     hashtags: parsed.hashtags,
     cta: parsed.cta,
     storyText: parsed.story_text,
@@ -86,5 +91,63 @@ export class OpenAiService {
         cause: error
       });
     }
+  }
+
+  async chatAssistant(input: {
+    language: "ru" | "en";
+    prompt: string;
+    context?: string;
+  }): Promise<string> {
+    const system =
+      input.language === "ru"
+        ? "Ты AI-ассистент по контенту Instagram для медицинской клиники. Помогай с идеями, стилем и безопасным маркетинговым текстом. Не ставь диагноз и не назначай лечение."
+        : "You are an AI assistant for a medical clinic Instagram content team. Help with ideas, style, and safe marketing copy. Never diagnose or prescribe treatment.";
+    const user = [input.context ?? "", input.prompt].filter(Boolean).join("\n\n");
+    try {
+      const response = await this.client.responses.create({
+        model: env.OPENAI_MODEL,
+        input: [
+          { role: "system", content: system },
+          { role: "user", content: user }
+        ]
+      });
+      const text = response.output_text?.trim();
+      if (!text) {
+        throw new AppError("OpenAI returned empty output", {
+          code: "EXTERNAL_SERVICE_ERROR",
+          statusCode: 502
+        });
+      }
+      return text;
+    } catch (error) {
+      this.serviceLogger.error("OpenAI assistant chat failed", {
+        error: error instanceof Error ? error.message : String(error)
+      });
+      throw new AppError("Failed to generate assistant response", {
+        code: "EXTERNAL_SERVICE_ERROR",
+        statusCode: 502,
+        cause: error
+      });
+    }
+  }
+
+  async generateIdeas(input: {
+    language: "ru" | "en";
+    count?: number;
+  }): Promise<string> {
+    const count = Math.min(15, Math.max(5, input.count ?? 10));
+    const prompt =
+      input.language === "ru"
+        ? `Сгенерируй ${count} безопасных идей для Instagram медицинской клиники. Только контент-маркетинг, без диагнозов и обещаний лечения.`
+        : `Generate ${count} safe Instagram content ideas for a medical clinic. Content marketing only, no diagnosis and no treatment promises.`;
+    return this.chatAssistant({ language: input.language, prompt });
+  }
+
+  async generateWeeklyContentPlan(input: { language: "ru" | "en" }): Promise<string> {
+    const prompt =
+      input.language === "ru"
+        ? "Составь контент-план на 7 дней для клиники: идеи для Post, Story и Reel, с мягким медицинским тоном и без рискованных обещаний."
+        : "Create a 7-day clinic Instagram content plan with Post, Story, and Reel ideas in a soft compliant medical tone.";
+    return this.chatAssistant({ language: input.language, prompt });
   }
 }

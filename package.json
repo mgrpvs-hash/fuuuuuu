@@ -15,7 +15,9 @@
     "test:telegram": "tsx src/scripts/test-telegram.ts",
     "test:media-design": "tsx src/scripts/test-media-design.ts",
     "test:media-design-latest": "tsx src/scripts/test-media-design-latest.ts",
+    "test:design-variants": "tsx src/scripts/test-design-variants.ts",
     "test:caption-format": "tsx src/scripts/test-caption-format.ts",
+    "test:assistant": "tsx src/scripts/test-assistant.ts",
     "debug:instagram-access": "tsx src/scripts/debug-instagram-access.ts"
   },
   "keywords": [

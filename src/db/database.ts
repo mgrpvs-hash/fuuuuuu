@@ -21,6 +21,12 @@ export interface DbGeneratedContent {
   reel_idea: string | null;
   risk_warning: string | null;
   safe_rewrite_hint: string | null;
+  visual_title: string | null;
+  visual_subtitle: string | null;
+  design_hint: string | null;
+  design_variant: string | null;
+  design_seed: string | null;
+  design_attempt_number: number;
   selected_caption: string | null;
   use_original_media: number;
   final_instagram_caption: string | null;
@@ -100,6 +106,30 @@ export class AppDatabase {
       {
         name: "final_instagram_caption",
         sql: "ALTER TABLE generated_contents ADD COLUMN final_instagram_caption TEXT"
+      },
+      {
+        name: "visual_title",
+        sql: "ALTER TABLE generated_contents ADD COLUMN visual_title TEXT"
+      },
+      {
+        name: "visual_subtitle",
+        sql: "ALTER TABLE generated_contents ADD COLUMN visual_subtitle TEXT"
+      },
+      {
+        name: "design_hint",
+        sql: "ALTER TABLE generated_contents ADD COLUMN design_hint TEXT"
+      },
+      {
+        name: "design_variant",
+        sql: "ALTER TABLE generated_contents ADD COLUMN design_variant TEXT"
+      },
+      {
+        name: "design_seed",
+        sql: "ALTER TABLE generated_contents ADD COLUMN design_seed TEXT"
+      },
+      {
+        name: "design_attempt_number",
+        sql: "ALTER TABLE generated_contents ADD COLUMN design_attempt_number INTEGER NOT NULL DEFAULT 0"
       }
     ];
 
@@ -212,15 +242,19 @@ export class AppDatabase {
     reelIdea?: string;
     riskWarning?: string;
     safeRewriteHint?: string;
+    visualTitle?: string;
+    visualSubtitle?: string;
+    designHint?: string;
   }): number {
     const user = this.getOrCreateUser(input.telegramUserId);
     const result = this.db
       .prepare(
         `INSERT INTO generated_contents (
           user_id, media_item_id, content_type, language, description, captions_json, hashtags_json,
-          cta, story_text, reel_idea, risk_warning, safe_rewrite_hint, use_original_media,
+          cta, story_text, reel_idea, risk_warning, safe_rewrite_hint, visual_title, visual_subtitle,
+          design_hint, use_original_media,
           final_instagram_caption, status, created_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, NULL, 'draft', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)`
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, NULL, 'draft', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)`
       )
       .run(
         user.id,
@@ -234,7 +268,10 @@ export class AppDatabase {
         input.storyText,
         input.reelIdea ?? null,
         input.riskWarning ?? null,
-        input.safeRewriteHint ?? null
+        input.safeRewriteHint ?? null,
+        input.visualTitle ?? null,
+        input.visualSubtitle ?? null,
+        input.designHint ?? null
       );
 
     return Number(result.lastInsertRowid);
@@ -278,6 +315,51 @@ export class AppDatabase {
     this.db
       .prepare("UPDATE generated_contents SET use_original_media = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?")
       .run(useOriginal ? 1 : 0, contentId);
+  }
+
+  updateDesignMetadata(input: {
+    contentId: number;
+    designVariant: string;
+    designSeed: string;
+    incrementAttempt?: boolean;
+  }): void {
+    const attemptExpression = input.incrementAttempt
+      ? "design_attempt_number = COALESCE(design_attempt_number, 0) + 1,"
+      : "";
+    this.db
+      .prepare(
+        `UPDATE generated_contents
+         SET design_variant = ?,
+             design_seed = ?,
+             ${attemptExpression}
+             updated_at = CURRENT_TIMESTAMP
+         WHERE id = ?`
+      )
+      .run(input.designVariant, input.designSeed, input.contentId);
+  }
+
+  updateGeneratedLanguage(contentId: number, language: Language): void {
+    this.db
+      .prepare("UPDATE generated_contents SET language = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?")
+      .run(language, contentId);
+  }
+
+  updateFinalCaptionAndHashtags(input: {
+    contentId: number;
+    finalCaption: string;
+    hashtags: string[];
+    selectedCaption?: string;
+  }): void {
+    this.db
+      .prepare(
+        `UPDATE generated_contents
+         SET final_instagram_caption = ?,
+             hashtags_json = ?,
+             selected_caption = COALESCE(?, selected_caption),
+             updated_at = CURRENT_TIMESTAMP
+         WHERE id = ?`
+      )
+      .run(input.finalCaption, JSON.stringify(input.hashtags), input.selectedCaption ?? null, input.contentId);
   }
 
   updateMediaDesignResult(input: {

@@ -93,13 +93,8 @@ async function assertOutputImage(outputPath: string): Promise<{ width: number; h
 }
 
 function getOutputPath(tmpDir: string, variant: MediaDesignVariant): string {
-  if (variant === "clean_light") {
-    return path.resolve(tmpDir, "test-branded-post-clean-light.jpg");
-  }
-  if (variant === "premium_card") {
-    return path.resolve(tmpDir, "test-branded-post-premium-card.jpg");
-  }
-  return path.resolve(tmpDir, "test-branded-post-equipment-focus.jpg");
+  const slug = variant.replace(/_/g, "-");
+  return path.resolve(tmpDir, `test-branded-post-${slug}.jpg`);
 }
 
 async function main(): Promise<void> {
@@ -115,7 +110,8 @@ async function main(): Promise<void> {
 
   for (const variant of MEDIA_DESIGN_VARIANTS) {
     const outputPath = getOutputPath(tmpDir, variant);
-    const sourcePath = variant === "premium_card" ? verticalSource : horizontalSource;
+    const sourcePath =
+      variant === "premium_card" || variant === "split_layout" ? verticalSource : horizontalSource;
     const result = await service.createBrandedPostImage({
       sourcePath,
       language: "ru",
@@ -144,6 +140,7 @@ async function main(): Promise<void> {
       outputPath: result.outputPath,
       dimensions: `${imageMeta.width}x${imageMeta.height}`,
       imageAreaMode: result.imageAreaMode,
+      layout: result.layoutMetadata,
       centerVariance
     });
   }
