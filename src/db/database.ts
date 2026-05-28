@@ -254,7 +254,7 @@ export class AppDatabase {
           cta, story_text, reel_idea, risk_warning, safe_rewrite_hint, visual_title, visual_subtitle,
           design_hint, use_original_media,
           final_instagram_caption, status, created_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, NULL, 'draft', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)`
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, NULL, 'draft', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)`
       )
       .run(
         user.id,
