@@ -230,7 +230,11 @@ async function safeReply(ctx: Context, text: string): Promise<void> {
   await ctx.telegram.sendMessage(chatId, text);
 }
 
-async function sendPreviewPhoto(ctx: Context, previewPath: string | null, variant?: MediaDesignVariant): Promise<void> {
+async function sendPreviewPhoto(
+  ctx: Context,
+  previewPath: string | null,
+  variant?: MediaDesignVariant | TextPosterStyleVariant
+): Promise<void> {
   if (!previewPath) {
     return;
   }
@@ -573,12 +577,16 @@ export function createTelegramBot(input: {
     let useOriginalMedia = Boolean(args.forceUseOriginal);
     let designFailed = false;
     let previewPath: string | null = null;
-    let designVariant: MediaDesignVariant | undefined;
+    let designVariant: MediaDesignVariant | TextPosterStyleVariant | undefined;
 
     if (!useOriginalMedia) {
       const inputKind = /^https:\/\//i.test(args.media.local_path) ? "url" : "path";
       const sourcePathDebug = await inspectSourcePath(args.media.local_path);
       const orientation = await detectMediaOrientation(args.media);
+      const preferredMediaStyle =
+        args.preferredStyle && MEDIA_DESIGN_VARIANTS.includes(args.preferredStyle as MediaDesignVariant)
+          ? (args.preferredStyle as MediaDesignVariant)
+          : null;
       const selection = designSelectionService.chooseTemplate({
         contentType: args.payload.contentType,
         language: args.payload.language,
@@ -586,7 +594,7 @@ export function createTelegramBot(input: {
         visualTitle: args.payload.visualTitle ?? undefined,
         previousVariant: (draft.design_variant as MediaDesignVariant | null) ?? null,
         orientation,
-        preferredStyle: args.preferredStyle ?? mapDesignHintToVariant(args.payload.designHint)
+        preferredStyle: preferredMediaStyle ?? mapDesignHintToVariant(args.payload.designHint)
       });
 
       botLogger.info("media design input debug", {
