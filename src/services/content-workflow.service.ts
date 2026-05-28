@@ -1,5 +1,6 @@
 import dayjs from "dayjs";
 
+import { env } from "../config/env.js";
 import { AppDatabase } from "../db/database.js";
 import { DraftStatus } from "../types/domain.js";
 import { AppError } from "../types/errors.js";
@@ -60,6 +61,9 @@ export class ContentWorkflowService {
     if (!media) {
       return { success: false, message: "Media not found for this draft" };
     }
+    if (!media.storage_url) {
+      return { success: false, message: "Draft is stale. Please send a new photo." };
+    }
 
     try {
       await this.mediaValidationService.validateStoredFile(media.local_path, media.media_type);
@@ -70,11 +74,29 @@ export class ContentWorkflowService {
       const withDisclaimer = this.safetyService.ensureMedicalDisclaimer(baseCaption, draft.language);
       this.safetyService.assertSafeForPublishing(withDisclaimer);
 
-      const mediaPathOrUrl = media.storage_url ?? media.local_path;
+      let storageHost: string | null = null;
+      try {
+        storageHost = new URL(media.storage_url).host;
+      } catch {
+        storageHost = null;
+      }
+      this.workflowLogger.info("approval publish debug", {
+        draftId: draft.id,
+        userId: draft.user_id,
+        contentType: draft.content_type,
+        mediaItemId: media.id,
+        storage_url_exists: media.storage_url ? "yes" : "no",
+        storage_url_host: storageHost,
+        caption_length: withDisclaimer.length,
+        igUserId: env.INSTAGRAM_BUSINESS_ACCOUNT_ID,
+        pageId: env.FACEBOOK_PAGE_ID ?? null,
+        instagramPublishFlow: "unified-v2"
+      });
+
       const result = await this.instagramService.publish({
         contentType: draft.content_type,
         mediaType: media.media_type,
-        mediaPathOrUrl,
+        mediaPathOrUrl: media.storage_url,
         caption: withDisclaimer,
         hashtags
       });

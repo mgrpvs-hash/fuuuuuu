@@ -44,6 +44,7 @@ async function main(): Promise<void> {
   const caption =
     "MVP Instagram publish test for medical clinic content. Информация носит ознакомительный характер и не заменяет консультацию специалиста.";
   const hashtags = ["#mcclinic", "#healthcare", "#medical"];
+  const captionWithHashtags = `${caption}\n\n${hashtags.join(" ")}`.trim();
 
   try {
     await instagram.validatePublicMediaUrl(media.storage_url, "image");
@@ -61,18 +62,15 @@ async function main(): Promise<void> {
   }
 
   try {
-    const create = await instagram.createPostContainer({
-      mediaPathOrUrl: media.storage_url,
-      mediaType: "image",
+    const create = await instagram.createInstagramMediaContainer({
+      imageUrl: media.storage_url,
       contentType: "post",
-      caption,
-      hashtags
+      caption: captionWithHashtags
     });
 
     console.log("Create container response:", sanitize({
       containerId: create.containerId,
-      mediaUrl: create.mediaUrl,
-      warning: create.warning ?? null
+      rawResponseSanitized: create.rawResponseSanitized
     }));
 
     if (!publishFlag) {

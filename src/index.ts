@@ -1,3 +1,6 @@
+import fs from "node:fs";
+import path from "node:path";
+
 import { createTelegramBot } from "./bot/bot.js";
 import { env } from "./config/env.js";
 import { AppDatabase } from "./db/database.js";
@@ -26,7 +29,23 @@ function withTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<T> {
   });
 }
 
+function resolveBuildVersion(): string {
+  try {
+    const packagePath = path.resolve(process.cwd(), "package.json");
+    const pkg = JSON.parse(fs.readFileSync(packagePath, "utf-8")) as {
+      version?: string;
+    };
+    if (pkg.version) {
+      return pkg.version;
+    }
+  } catch {
+    // ignore and fallback
+  }
+  return new Date().toISOString();
+}
+
 async function bootstrap(): Promise<void> {
+  const buildVersion = resolveBuildVersion();
   const db = await AppDatabase.init(env.DATABASE_URL);
   const safetyService = new SafetyService();
   const mediaValidationService = new MediaValidationService();
@@ -56,7 +75,11 @@ async function bootstrap(): Promise<void> {
 
   const scheduler = new SchedulerService(db, workflowService);
   scheduler.start();
-  logger.info("Telegram bootstrap preflight", { mode: env.TELEGRAM_MODE });
+  logger.info("Telegram bootstrap preflight", {
+    mode: env.TELEGRAM_MODE,
+    buildVersion,
+    instagramPublishFlow: "unified-v2"
+  });
 
   let botUsername = "@unknown";
   let botId: number | "unknown" = "unknown";
@@ -89,9 +112,19 @@ async function bootstrap(): Promise<void> {
   });
 
   if (env.TELEGRAM_MODE === "webhook") {
-    logger.info("Telegram bot started in webhook mode", { botUsername, botId });
+    logger.info("Telegram bot started in webhook mode", {
+      botUsername,
+      botId,
+      buildVersion,
+      instagramPublishFlow: "unified-v2"
+    });
   } else {
-    logger.info("Telegram bot started in polling mode", { botUsername, botId });
+    logger.info("Telegram bot started in polling mode", {
+      botUsername,
+      botId,
+      buildVersion,
+      instagramPublishFlow: "unified-v2"
+    });
   }
 
   process.once("SIGINT", async () => {
