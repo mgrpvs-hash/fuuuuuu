@@ -11,6 +11,14 @@ function main(): void {
 
   assert(service.classify("придумай идеи для постов").type === "generate_ideas", "ideas classification failed");
   assert(
+    service.classify("сделай картинку с надписью доброе утро").type === "create_text_poster",
+    "create_text_poster classification failed"
+  );
+  assert(
+    service.classify("сделай постер без фото").type === "create_text_poster",
+    "create_text_poster without photo classification failed"
+  );
+  assert(
     service.classify("сделай дизайн премиальнее").type === "edit_design",
     "edit_design classification failed"
   );

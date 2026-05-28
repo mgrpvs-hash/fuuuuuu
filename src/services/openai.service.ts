@@ -2,9 +2,12 @@ import OpenAI from "openai";
 
 import { env } from "../config/env.js";
 import { contentGenerationSchema } from "../prompts/schemas/content-generation.schema.js";
+import { textPosterGenerationSchema } from "../prompts/schemas/text-poster-generation.schema.js";
 import { MEDICAL_CONTENT_SYSTEM_PROMPT } from "../prompts/system/medical-content.system.prompt.js";
+import { TEXT_POSTER_SYSTEM_PROMPT } from "../prompts/system/text-poster.system.prompt.js";
 import { buildContentGenerationUserPrompt } from "../prompts/user/content-generation.user.prompt.js";
-import { GeneratedContentPayload } from "../types/domain.js";
+import { buildTextPosterUserPrompt } from "../prompts/user/text-poster.user.prompt.js";
+import { GeneratedContentPayload, PosterGeneratedContentPayload } from "../types/domain.js";
 import { AppError } from "../types/errors.js";
 import { logger } from "../utils/logger.js";
 
@@ -38,6 +41,24 @@ function parseOutput(text: string): GeneratedContentPayload {
     reelIdea: parsed.reel_idea,
     riskWarning: parsed.risk_warning,
     safeRewriteHint: parsed.safe_rewrite_hint
+  };
+}
+
+function parsePosterOutput(text: string): PosterGeneratedContentPayload {
+  const jsonLike = extractJsonPayload(text);
+  const parsedUnknown = JSON.parse(jsonLike) as unknown;
+  const parsed = textPosterGenerationSchema.parse(parsedUnknown);
+
+  return {
+    visualTitle: parsed.visual_title,
+    visualSubtitle: parsed.visual_subtitle,
+    shortOverlayText: parsed.short_overlay_text,
+    posterCaption: parsed.poster_caption,
+    cta: parsed.cta,
+    hashtags: parsed.hashtags,
+    posterType: parsed.poster_type,
+    designHint: parsed.design_hint,
+    safetyNotes: parsed.safety_notes
   };
 }
 
@@ -149,5 +170,41 @@ export class OpenAiService {
         ? "Составь контент-план на 7 дней для клиники: идеи для Post, Story и Reel, с мягким медицинским тоном и без рискованных обещаний."
         : "Create a 7-day clinic Instagram content plan with Post, Story, and Reel ideas in a soft compliant medical tone.";
     return this.chatAssistant({ language: input.language, prompt });
+  }
+
+  async generateTextPosterContent(input: {
+    language: "ru" | "en";
+    userPrompt: string;
+  }): Promise<PosterGeneratedContentPayload> {
+    const prompt = buildTextPosterUserPrompt(input);
+    try {
+      const response = await this.client.responses.create({
+        model: env.OPENAI_MODEL,
+        input: [
+          { role: "system", content: TEXT_POSTER_SYSTEM_PROMPT },
+          { role: "user", content: prompt }
+        ]
+      });
+      const raw = response.output_text?.trim();
+      if (!raw) {
+        throw new AppError("OpenAI returned empty output", {
+          code: "EXTERNAL_SERVICE_ERROR",
+          statusCode: 502
+        });
+      }
+      return parsePosterOutput(raw);
+    } catch (error) {
+      this.serviceLogger.error("OpenAI text-poster generation failed", {
+        error: error instanceof Error ? error.message : String(error)
+      });
+      if (error instanceof AppError) {
+        throw error;
+      }
+      throw new AppError("Failed to generate text poster content using OpenAI", {
+        code: "EXTERNAL_SERVICE_ERROR",
+        statusCode: 502,
+        cause: error
+      });
+    }
   }
 }

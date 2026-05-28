@@ -40,6 +40,18 @@ export interface GeneratedContentPayload {
   safeRewriteHint?: string;
 }
 
+export interface PosterGeneratedContentPayload {
+  visualTitle: string;
+  visualSubtitle?: string;
+  shortOverlayText?: string;
+  posterCaption: string;
+  cta: string;
+  hashtags: string[];
+  posterType: string;
+  designHint?: string;
+  safetyNotes?: string;
+}
+
 export interface PublishResult {
   success: boolean;
   igMediaId?: string;

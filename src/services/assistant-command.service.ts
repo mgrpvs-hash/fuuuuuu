@@ -4,6 +4,7 @@ export type AssistantIntentType =
   | "general_chat"
   | "generate_ideas"
   | "content_plan"
+  | "create_text_poster"
   | "edit_caption"
   | "edit_design"
   | "change_language"
@@ -31,6 +32,14 @@ export class AssistantCommandService {
   classify(text: string): AssistantIntent {
     const normalized = text.trim().toLowerCase();
     if (!normalized) return { type: "unknown" };
+
+    if (
+      /(сделай\s+(картинк|фото|постер|карточк|визуал)|без\s+фото|просто\s+текст\s+на\s+картинке|картинка\s+для\s+инстаграма|пост\s+с\s+надписью|афиша|утренний\s+пост|мотивационный\s+пост|инфографика|make\s+(image|poster|visual|graphic))/i.test(
+        normalized
+      )
+    ) {
+      return { type: "create_text_poster" };
+    }
 
     if (/(иде[йи]|ideas?|контент[- ]?план|content plan)/i.test(normalized)) {
       if (/план|content plan|на неделю|week/i.test(normalized)) {

@@ -15,6 +15,7 @@ import { RateLimitService } from "./services/rate-limit.service.js";
 import { SafetyService } from "./services/safety.service.js";
 import { SchedulerService } from "./services/scheduler.service.js";
 import { StorageService } from "./services/storage.service.js";
+import { TextPosterDesignService } from "./services/text-poster-design.service.js";
 import { VideoDesignService } from "./services/video-design.service.js";
 import { logger } from "./utils/logger.js";
 
@@ -55,6 +56,7 @@ async function bootstrap(): Promise<void> {
   const mediaValidationService = new MediaValidationService();
   const storageService = new StorageService();
   const mediaDesignService = new MediaDesignService();
+  const textPosterDesignService = new TextPosterDesignService();
   const videoDesignService = new VideoDesignService();
   const designSelectionService = new DesignSelectionService();
   const assistantCommandService = new AssistantCommandService();
@@ -79,6 +81,7 @@ async function bootstrap(): Promise<void> {
     mediaValidationService,
     storageService,
     mediaDesignService,
+    textPosterDesignService,
     videoDesignService,
     designSelectionService,
     assistantCommandService,

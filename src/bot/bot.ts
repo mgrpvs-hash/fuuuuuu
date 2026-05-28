@@ -21,6 +21,11 @@ import { OpenAiService } from "../services/openai.service.js";
 import { RateLimitService } from "../services/rate-limit.service.js";
 import { SafetyService } from "../services/safety.service.js";
 import { StorageService } from "../services/storage.service.js";
+import {
+  TEXT_POSTER_STYLE_VARIANTS,
+  TextPosterDesignService,
+  TextPosterStyleVariant
+} from "../services/text-poster-design.service.js";
 import { VideoDesignService } from "../services/video-design.service.js";
 import { ContentType, Language, MediaType } from "../types/domain.js";
 import { AppError, toAppError } from "../types/errors.js";
@@ -36,6 +41,7 @@ type DraftSession = {
   awaitingScheduleForContentId?: number;
   activeDraftContentId?: number;
   preferredStyle?: MediaDesignVariant;
+  preferredPosterStyle?: TextPosterStyleVariant;
 };
 
 type GeneratedPayload = {
@@ -65,6 +71,15 @@ const STYLE_LABELS: Record<MediaDesignVariant, string> = {
   minimal_storylike: "Minimal",
   split_layout: "Split",
   full_bleed_blur: "Blur"
+};
+
+const POSTER_STYLE_LABELS: Record<TextPosterStyleVariant, string> = {
+  morning_health: "Morning health",
+  medical_tip: "Medical tip",
+  clinic_announcement: "Announcement",
+  minimalist_quote: "Minimalist",
+  service_card: "Service card",
+  educational_card: "Educational"
 };
 
 function getUserId(ctx: Context): number | null {
@@ -162,6 +177,23 @@ function buildStyleKeyboard(contentId: number) {
   ]);
 }
 
+function buildPosterStyleKeyboard(contentId: number) {
+  return Markup.inlineKeyboard([
+    [
+      Markup.button.callback("Morning health", `posterstyle:${contentId}:morning_health`),
+      Markup.button.callback("Medical tip", `posterstyle:${contentId}:medical_tip`)
+    ],
+    [
+      Markup.button.callback("Announcement", `posterstyle:${contentId}:clinic_announcement`),
+      Markup.button.callback("Minimalist", `posterstyle:${contentId}:minimalist_quote`)
+    ],
+    [
+      Markup.button.callback("Service", `posterstyle:${contentId}:service_card`),
+      Markup.button.callback("Educational", `posterstyle:${contentId}:educational_card`)
+    ]
+  ]);
+}
+
 function buildDesignFailureKeyboard(contentId: number) {
   return Markup.inlineKeyboard([
     [
@@ -243,6 +275,10 @@ async function detectMediaOrientation(media: DbMediaItem): Promise<"portrait" | 
   }
 }
 
+function isGeneratedPosterMedia(media: DbMediaItem): boolean {
+  return media.telegram_file_id.startsWith("generated-poster:");
+}
+
 function mapDesignHintToVariant(hint?: string | null): MediaDesignVariant | null {
   if (!hint) return null;
   const normalized = hint.trim().toLowerCase();
@@ -263,6 +299,28 @@ function chooseStyleFromText(text: string): MediaDesignVariant | null {
   if (/blur|фон/.test(normalized)) return "full_bleed_blur";
   if (/clean|light|чист/.test(normalized)) return "clean_light";
   return null;
+}
+
+function choosePosterStyleFromText(text: string): TextPosterStyleVariant | undefined {
+  const normalized = text.toLowerCase();
+  if (/утро|morning|витамин/.test(normalized)) return "morning_health";
+  if (/анонс|новост|announcement|врач/.test(normalized)) return "clinic_announcement";
+  if (/миним|minimal|quote|цитат|премиаль/.test(normalized)) return "minimalist_quote";
+  if (/услуг|service/.test(normalized)) return "service_card";
+  if (/образоват|инфограф|education/.test(normalized)) return "educational_card";
+  if (/совет|tip/.test(normalized)) return "medical_tip";
+  return undefined;
+}
+
+function pickNextPosterVariant(previous?: string | null): TextPosterStyleVariant {
+  if (!previous) {
+    return "medical_tip";
+  }
+  const index = TEXT_POSTER_STYLE_VARIANTS.indexOf(previous as TextPosterStyleVariant);
+  if (index < 0) {
+    return "medical_tip";
+  }
+  return TEXT_POSTER_STYLE_VARIANTS[(index + 1) % TEXT_POSTER_STYLE_VARIANTS.length];
 }
 
 function extractHashtags(caption: string): string[] {
@@ -292,6 +350,37 @@ function makeCaptionMoreProfessional(caption: string): string {
     .trim();
 }
 
+function sanitizePosterMedicalText(input: { caption: string; language: Language; userPrompt: string }): string {
+  let text = input.caption
+    .replace(/100%\s*результат/gi, "")
+    .replace(/гарант\w*/gi, "")
+    .replace(/без\s*риска/gi, "")
+    .replace(/полностью\s*вылеч\w*/gi, "")
+    .replace(/\s+/g, " ")
+    .trim();
+
+  if (/пейте\s+витамины|take vitamins/i.test(`${text} ${input.userPrompt}`)) {
+    const suffix =
+      input.language === "en"
+        ? "Supplement and vitamin intake is best discussed with a specialist."
+        : "Приём добавок и витаминов лучше обсуждать со специалистом.";
+    if (!new RegExp(suffix.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "i").test(text)) {
+      text = `${text}\n\n${suffix}`.trim();
+    }
+  }
+
+  return text;
+}
+
+function mapPosterHintToVariant(hint?: string | null): TextPosterStyleVariant | undefined {
+  if (!hint) return undefined;
+  const normalized = hint.trim().toLowerCase();
+  if (TEXT_POSTER_STYLE_VARIANTS.includes(normalized as TextPosterStyleVariant)) {
+    return normalized as TextPosterStyleVariant;
+  }
+  return undefined;
+}
+
 export function createTelegramBot(input: {
   db: AppDatabase;
   aiService: OpenAiService;
@@ -300,6 +389,7 @@ export function createTelegramBot(input: {
   mediaValidationService: MediaValidationService;
   storageService: StorageService;
   mediaDesignService: MediaDesignService;
+  textPosterDesignService: TextPosterDesignService;
   videoDesignService: VideoDesignService;
   designSelectionService: DesignSelectionService;
   assistantCommandService: AssistantCommandService;
@@ -313,6 +403,7 @@ export function createTelegramBot(input: {
     mediaValidationService,
     storageService,
     mediaDesignService,
+    textPosterDesignService,
     videoDesignService,
     designSelectionService,
     assistantCommandService,
@@ -348,19 +439,128 @@ export function createTelegramBot(input: {
     return { finalCaption: formatted.caption, warning: formatted.warning, hashtags: formatted.hashtags };
   };
 
+  const createTextPosterDraft = async (args: {
+    ctx: Context;
+    userId: number;
+    prompt: string;
+    preferredStyle?: TextPosterStyleVariant;
+  }): Promise<void> => {
+    const user = db.getUserByTelegramId(args.userId);
+    await args.ctx.reply("Создаю визуал для Instagram...");
+
+    const poster = await aiService.generateTextPosterContent({
+      language: user.language,
+      userPrompt: args.prompt
+    });
+    const safePosterCaption = sanitizePosterMedicalText({
+      caption: poster.posterCaption,
+      language: user.language,
+      userPrompt: args.prompt
+    });
+
+    const posterDesign = await textPosterDesignService.createPoster({
+      userPrompt: args.prompt,
+      language: user.language,
+      brandName: "MC Clinic Medical",
+      brandHandle: "@mc_clinic.du",
+      posterType: poster.posterType,
+      styleVariant:
+        args.preferredStyle ?? choosePosterStyleFromText(args.prompt) ?? mapPosterHintToVariant(poster.designHint),
+      visualTitle: poster.visualTitle,
+      visualSubtitle: poster.visualSubtitle,
+      shortOverlayText: poster.shortOverlayText
+    });
+
+    const uploaded = await storageService.uploadMediaFromLocal({
+      localPath: posterDesign.outputPath,
+      mediaType: "image"
+    });
+
+    const mediaItemId = db.createMediaItem({
+      telegramUserId: args.userId,
+      telegramFileId: `generated-poster:${Date.now()}`,
+      mediaType: "image",
+      localPath: posterDesign.outputPath
+    });
+    db.updateMediaDesignResult({
+      mediaItemId,
+      storageUrlProcessed: uploaded.publicUrl,
+      processedMediaPath: posterDesign.outputPath,
+      mediaProcessingStatus: "processed",
+      mediaDesignVersion: posterDesign.designVersion
+    });
+
+    const contentId = db.createGeneratedContent({
+      telegramUserId: args.userId,
+      mediaItemId,
+      contentType: "post",
+      language: user.language,
+      description: args.prompt,
+      captions: [safePosterCaption],
+      hashtags: poster.hashtags,
+      cta: poster.cta,
+      storyText: "",
+      visualTitle: poster.visualTitle,
+      visualSubtitle: poster.visualSubtitle,
+      designHint: poster.designHint
+    });
+    db.updateDesignMetadata({
+      contentId,
+      designVariant: posterDesign.variant,
+      designSeed: `poster:${posterDesign.variant}:${Date.now()}`,
+      incrementAttempt: true
+    });
+
+    const draft = db.getGeneratedContentById(contentId);
+    if (!draft) {
+      throw new AppError("Draft not found after poster creation", {
+        code: "INTERNAL_ERROR",
+        statusCode: 500
+      });
+    }
+
+    const formatted = formatInstagramCaption({
+      selectedCaption: safePosterCaption,
+      cta: poster.cta,
+      hashtags: poster.hashtags,
+      contentType: "post"
+    });
+    db.selectCaption(contentId, safePosterCaption);
+    db.updateFinalCaptionAndHashtags({
+      contentId,
+      finalCaption: formatted.caption,
+      hashtags: formatted.hashtags,
+      selectedCaption: safePosterCaption
+    });
+    db.setUseOriginalMedia(contentId, false);
+
+    await sendPreviewPhoto(args.ctx, posterDesign.outputPath, undefined);
+    await args.ctx.reply(
+      formatCaptionOnlyPreview({
+        contentId,
+        finalCaption: formatted.caption,
+        captionWarning: formatted.warning,
+        useOriginalMedia: false
+      }),
+      buildActionKeyboard(contentId)
+    );
+
+    setActiveDraftForUser(args.userId, contentId, mediaItemId, "image");
+  };
+
   const prepareMediaDesignAndPreview = async (args: {
     ctx: Context;
     contentId: number;
     media: DbMediaItem;
     payload: GeneratedPayload;
     forceUseOriginal?: boolean;
-    preferredStyle?: MediaDesignVariant | null;
+    preferredStyle?: MediaDesignVariant | TextPosterStyleVariant | null;
   }): Promise<{
     finalCaption: string;
     captionWarning?: string;
     useOriginalMedia: boolean;
     designFailed: boolean;
-    designVariant?: MediaDesignVariant;
+    designVariant?: MediaDesignVariant | TextPosterStyleVariant;
   }> => {
     const draft = db.getGeneratedContentById(args.contentId);
     if (!draft) {
@@ -401,50 +601,87 @@ export function createTelegramBot(input: {
 
       try {
         if (args.media.media_type === "image") {
-          const imageDesign = await mediaDesignService.createBrandedPostImage({
-            sourcePath: args.media.local_path,
-            language: args.payload.language,
-            title: args.payload.visualTitle ?? deriveVisualTitle(args.payload.language, draft.selected_caption ?? ""),
-            subtitle: args.payload.visualSubtitle ?? undefined,
-            bulletPoints: args.payload.bulletPoints,
-            variant: selection.templateId
-          });
-          designVariant = imageDesign.designVariant;
-          const uploaded = await storageService.uploadMediaFromLocal({
-            localPath: imageDesign.outputPath,
-            mediaType: "image"
-          });
-          db.updateMediaDesignResult({
-            mediaItemId: args.media.id,
-            storageUrlProcessed: uploaded.publicUrl,
-            processedMediaPath: imageDesign.outputPath,
-            mediaProcessingStatus: "processed",
-            mediaDesignVersion: imageDesign.designVersion
-          });
-          db.updateDesignMetadata({
-            contentId: args.contentId,
-            designVariant: imageDesign.designVariant,
-            designSeed: selection.seed,
-            incrementAttempt: true
-          });
-          previewPath = imageDesign.outputPath;
-          botLogger.info("media design output debug", {
-            draftId: args.contentId,
-            mediaItemId: args.media.id,
-            input_kind: imageDesign.source.inputKind,
-            input_path_exists: imageDesign.source.pathExists ? "yes" : "no",
-            input_file_size: imageDesign.source.fileSize,
-            original_image_width: imageDesign.source.width,
-            original_image_height: imageDesign.source.height,
-            design_variant: imageDesign.designVariant,
-            output_width: imageDesign.output.width,
-            output_height: imageDesign.output.height,
-            output_file_size: imageDesign.output.fileSize,
-            processed_image_path: imageDesign.outputPath,
-            processed_image_uploaded: "yes",
-            processed_media_url_exists: uploaded.publicUrl ? "yes" : "no",
-            icon_enabled: imageDesign.layoutMetadata.iconEnabled ? "yes" : "no"
-          });
+          if (isGeneratedPosterMedia(args.media)) {
+            const posterStyleVariant =
+              (args.preferredStyle as TextPosterStyleVariant | undefined) ??
+              pickNextPosterVariant(draft.design_variant);
+            const posterDesign = await textPosterDesignService.createPoster({
+              userPrompt: draft.description,
+              language: args.payload.language,
+              brandName: "MC Clinic Medical",
+              brandHandle: "@mc_clinic.du",
+              posterType: args.payload.designHint ?? undefined,
+              styleVariant: posterStyleVariant,
+              visualTitle:
+                args.payload.visualTitle ?? deriveVisualTitle(args.payload.language, draft.selected_caption ?? ""),
+              visualSubtitle: args.payload.visualSubtitle ?? undefined,
+              shortOverlayText: args.payload.captions[0] ?? undefined
+            });
+            designVariant = posterDesign.variant;
+            const uploaded = await storageService.uploadMediaFromLocal({
+              localPath: posterDesign.outputPath,
+              mediaType: "image"
+            });
+            db.updateMediaDesignResult({
+              mediaItemId: args.media.id,
+              storageUrlProcessed: uploaded.publicUrl,
+              processedMediaPath: posterDesign.outputPath,
+              mediaProcessingStatus: "processed",
+              mediaDesignVersion: posterDesign.designVersion
+            });
+            db.updateDesignMetadata({
+              contentId: args.contentId,
+              designVariant: posterDesign.variant,
+              designSeed: `poster:${posterDesign.variant}:${Date.now()}`,
+              incrementAttempt: true
+            });
+            previewPath = posterDesign.outputPath;
+          } else {
+            const imageDesign = await mediaDesignService.createBrandedPostImage({
+              sourcePath: args.media.local_path,
+              language: args.payload.language,
+              title: args.payload.visualTitle ?? deriveVisualTitle(args.payload.language, draft.selected_caption ?? ""),
+              subtitle: args.payload.visualSubtitle ?? undefined,
+              bulletPoints: args.payload.bulletPoints,
+              variant: (args.preferredStyle as MediaDesignVariant | undefined) ?? selection.templateId
+            });
+            designVariant = imageDesign.designVariant;
+            const uploaded = await storageService.uploadMediaFromLocal({
+              localPath: imageDesign.outputPath,
+              mediaType: "image"
+            });
+            db.updateMediaDesignResult({
+              mediaItemId: args.media.id,
+              storageUrlProcessed: uploaded.publicUrl,
+              processedMediaPath: imageDesign.outputPath,
+              mediaProcessingStatus: "processed",
+              mediaDesignVersion: imageDesign.designVersion
+            });
+            db.updateDesignMetadata({
+              contentId: args.contentId,
+              designVariant: imageDesign.designVariant,
+              designSeed: selection.seed,
+              incrementAttempt: true
+            });
+            previewPath = imageDesign.outputPath;
+            botLogger.info("media design output debug", {
+              draftId: args.contentId,
+              mediaItemId: args.media.id,
+              input_kind: imageDesign.source.inputKind,
+              input_path_exists: imageDesign.source.pathExists ? "yes" : "no",
+              input_file_size: imageDesign.source.fileSize,
+              original_image_width: imageDesign.source.width,
+              original_image_height: imageDesign.source.height,
+              design_variant: imageDesign.designVariant,
+              output_width: imageDesign.output.width,
+              output_height: imageDesign.output.height,
+              output_file_size: imageDesign.output.fileSize,
+              processed_image_path: imageDesign.outputPath,
+              processed_image_uploaded: "yes",
+              processed_media_url_exists: uploaded.publicUrl ? "yes" : "no",
+              icon_enabled: imageDesign.layoutMetadata.iconEnabled ? "yes" : "no"
+            });
+          }
         } else {
           const videoDesign = await videoDesignService.createStyledReel({
             sourcePath: args.media.local_path,
@@ -507,7 +744,7 @@ export function createTelegramBot(input: {
     media: DbMediaItem;
     payload: GeneratedPayload;
     forceUseOriginal?: boolean;
-    preferredStyle?: MediaDesignVariant | null;
+    preferredStyle?: MediaDesignVariant | TextPosterStyleVariant | null;
   }): Promise<void> => {
     const designResult = await prepareMediaDesignAndPreview(args);
     setActiveDraftForUser(args.userId, args.contentId, args.media.id, args.media.media_type);
@@ -567,6 +804,14 @@ export function createTelegramBot(input: {
     if (intent.type === "content_plan") {
       const plan = await aiService.generateWeeklyContentPlan({ language: user.language });
       await ctx.reply(plan);
+      return;
+    }
+    if (intent.type === "create_text_poster") {
+      await createTextPosterDraft({
+        ctx,
+        userId,
+        prompt: text
+      });
       return;
     }
 
@@ -631,14 +876,25 @@ export function createTelegramBot(input: {
       await ctx.reply(`Язык draft обновлён на ${intent.languageHint.toUpperCase()}. Нажмите Regenerate text.`);
       return;
     }
+    if (intent.type === "create_text_poster") {
+      await createTextPosterDraft({
+        ctx,
+        userId,
+        prompt: instruction
+      });
+      return;
+    }
     if (intent.type === "edit_design") {
+      const preferredStyle = isGeneratedPosterMedia(media)
+        ? choosePosterStyleFromText(instruction)
+        : chooseStyleFromText(instruction);
       await sendDraftPreview({
         ctx,
         userId,
         contentId: draft.id,
         media,
         payload: getDraftPayload(draft),
-        preferredStyle: chooseStyleFromText(instruction)
+        preferredStyle
       });
       return;
     }
@@ -1171,9 +1427,16 @@ export function createTelegramBot(input: {
     if (!userId) return;
     const contentId = parseActionContentId(ctx.match[1]);
     try {
-      db.getGeneratedContentByIdForTelegramUser(contentId, userId);
+      const draft = db.getGeneratedContentByIdForTelegramUser(contentId, userId);
+      const media = db.getMediaItemById(draft.media_item_id);
+      if (!media) {
+        throw new AppError("Media not found", { code: "NOT_FOUND", statusCode: 404 });
+      }
       await ctx.answerCbQuery();
-      await ctx.reply("Выберите стиль:", buildStyleKeyboard(contentId));
+      await ctx.reply(
+        "Выберите стиль:",
+        isGeneratedPosterMedia(media) ? buildPosterStyleKeyboard(contentId) : buildStyleKeyboard(contentId)
+      );
     } catch (error) {
       const appError = toAppError(error, "Style chooser failed");
       await ctx.answerCbQuery();
@@ -1207,6 +1470,36 @@ export function createTelegramBot(input: {
       await ctx.reply(`Ошибка применения стиля: ${appError.message}`);
     }
   });
+
+  bot.action(
+    /^posterstyle:(\d+):(morning_health|medical_tip|clinic_announcement|minimalist_quote|service_card|educational_card)$/,
+    async (ctx) => {
+      const userId = getUserId(ctx);
+      if (!userId) return;
+      const contentId = parseActionContentId(ctx.match[1]);
+      const variant = ctx.match[2] as TextPosterStyleVariant;
+      try {
+        const draft = db.getGeneratedContentByIdForTelegramUser(contentId, userId);
+        const media = db.getMediaItemById(draft.media_item_id);
+        if (!media) {
+          throw new AppError("Media not found", { code: "NOT_FOUND", statusCode: 404 });
+        }
+        await ctx.answerCbQuery(`Style: ${POSTER_STYLE_LABELS[variant]}`);
+        await sendDraftPreview({
+          ctx,
+          userId,
+          contentId: draft.id,
+          media,
+          payload: getDraftPayload(draft),
+          preferredStyle: variant
+        });
+      } catch (error) {
+        const appError = toAppError(error, "Poster style apply failed");
+        await ctx.answerCbQuery();
+        await ctx.reply(`Ошибка применения стиля: ${appError.message}`);
+      }
+    }
+  );
 
   bot.action(/^caption_shorter:(\d+)$/, async (ctx) => {
     const userId = getUserId(ctx);
