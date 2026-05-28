@@ -7,16 +7,113 @@ import { ensureDir } from "../utils/fs.js";
 
 const CANVAS_WIDTH = 1080;
 const CANVAS_HEIGHT = 1350;
-const DESIGN_VERSION = "photo-v1";
+const OUTER_PADDING = 64;
+const DESIGN_VERSION = "photo-v2";
+const TITLE_LINE_HEIGHT_RATIO = 1.12;
+const TITLE_FONT_SIZE_STEPS = [56, 54, 52, 50, 48];
 
 const DANGEROUS_PATTERNS = [
   /100%\s*результат/gi,
-  /гарантированное\s*лечение/gi,
+  /гарант/gi,
   /без\s*риска/gi,
+  /лучш(ее|ий)\s*(лечение|метод)/gi,
+  /полное\s*выздоровление/gi,
   /полностью\s*вылечит/gi,
-  /лучший\s*метод/gi,
-  /диагноз\s*без\s*врача/gi
+  /fake\s*before\/after/gi
 ];
+
+const RU_SAFE_TITLES = [
+  "Современное пространство для ухода",
+  "Комфорт и внимание к пациентам",
+  "Профессиональная медицинская помощь",
+  "Новые возможности для диагностики"
+];
+
+const EN_SAFE_TITLES = [
+  "Modern care space",
+  "Comfort-focused patient care",
+  "Professional medical support",
+  "Modern diagnostic capabilities"
+];
+
+export const MEDIA_DESIGN_VARIANTS = ["clean_light", "premium_card", "equipment_focus"] as const;
+export type MediaDesignVariant = (typeof MEDIA_DESIGN_VARIANTS)[number];
+
+type WrapResult = {
+  lines: string[];
+  truncated: boolean;
+};
+
+type TitleLayout = {
+  title: string;
+  lines: string[];
+  fontSize: number;
+  wasTruncated: boolean;
+};
+
+type VariantStyle = {
+  gradientStart: string;
+  gradientEnd: string;
+  topCardFill: string;
+  topCardStroke: string;
+  topCardHeight: number;
+  bottomCardFill: string;
+  bottomCardStroke: string;
+  bottomCardHeight: number;
+  imageShadowOpacity: number;
+  titleColor: string;
+  brandColor: string;
+  handleColor: string;
+  disclaimerColor: string;
+};
+
+const VARIANT_STYLES: Record<MediaDesignVariant, VariantStyle> = {
+  clean_light: {
+    gradientStart: "#f5f9fd",
+    gradientEnd: "#eef5fb",
+    topCardFill: "#ffffff",
+    topCardStroke: "#dbe7f3",
+    topCardHeight: 188,
+    bottomCardFill: "#ffffff",
+    bottomCardStroke: "#dbe7f3",
+    bottomCardHeight: 168,
+    imageShadowOpacity: 0.12,
+    titleColor: "#142e47",
+    brandColor: "#13314d",
+    handleColor: "#2b6699",
+    disclaimerColor: "#5f7288"
+  },
+  premium_card: {
+    gradientStart: "#f8fbff",
+    gradientEnd: "#edf3fa",
+    topCardFill: "#ffffff",
+    topCardStroke: "#d4e1ef",
+    topCardHeight: 196,
+    bottomCardFill: "#fbfdff",
+    bottomCardStroke: "#d4e1ef",
+    bottomCardHeight: 176,
+    imageShadowOpacity: 0.14,
+    titleColor: "#122a41",
+    brandColor: "#102d49",
+    handleColor: "#255f92",
+    disclaimerColor: "#566d86"
+  },
+  equipment_focus: {
+    gradientStart: "#f3f8fe",
+    gradientEnd: "#e9f2fa",
+    topCardFill: "#ffffff",
+    topCardStroke: "#d1deec",
+    topCardHeight: 172,
+    bottomCardFill: "#ffffff",
+    bottomCardStroke: "#d1deec",
+    bottomCardHeight: 160,
+    imageShadowOpacity: 0.1,
+    titleColor: "#122f4b",
+    brandColor: "#113049",
+    handleColor: "#2d6797",
+    disclaimerColor: "#5d738a"
+  }
+};
 
 function escapeXml(value: string): string {
   return value
@@ -35,61 +132,278 @@ function sanitizeMedicalTitle(value: string): string {
   return result.replace(/\s+/g, " ").trim();
 }
 
-function fallbackTitle(language: Language): string {
-  if (language === "en") {
-    return "Modern equipment at our clinic";
-  }
-  return "Современное оборудование в клинике";
+function measureCharWidth(char: string, fontSize: number): number {
+  if (char === " ") return fontSize * 0.33;
+  if (/[.,:;!'"`]/.test(char)) return fontSize * 0.28;
+  if (/[ilIjt|]/.test(char)) return fontSize * 0.34;
+  if (/[WwMm@#&%]/.test(char)) return fontSize * 0.78;
+  if (/[0-9]/.test(char)) return fontSize * 0.56;
+  return fontSize * 0.6;
 }
 
-function resolveDesignTitle(inputTitle: string | null | undefined, language: Language): string {
-  const clean = sanitizeMedicalTitle(String(inputTitle ?? ""));
-  if (clean.length > 6) {
-    return clean.slice(0, 90);
+function estimateTextWidth(text: string, fontSize: number): number {
+  let width = 0;
+  for (const char of text) {
+    width += measureCharWidth(char, fontSize);
   }
-  return fallbackTitle(language);
+  return width;
 }
 
-function buildOverlaySvg(input: { title: string; brand: string; handle: string; disclaimer: string }): Buffer {
-  const title = escapeXml(input.title);
+function fitWithEllipsis(text: string, maxWidth: number, fontSize: number): string {
+  const ellipsis = "…";
+  if (estimateTextWidth(text, fontSize) <= maxWidth) {
+    return text;
+  }
+
+  let candidate = text.trim();
+  while (candidate.length > 1 && estimateTextWidth(`${candidate}${ellipsis}`, fontSize) > maxWidth) {
+    candidate = candidate.slice(0, -1).trimEnd();
+  }
+  return `${candidate}${ellipsis}`;
+}
+
+function wrapText(input: { text: string; maxWidth: number; fontSize: number; maxLines: number }): WrapResult {
+  const normalized = input.text.replace(/\s+/g, " ").trim();
+  if (!normalized) {
+    return { lines: [], truncated: false };
+  }
+
+  const safeWidth = Math.floor(input.maxWidth * 0.96);
+  const words = normalized.split(" ");
+  const lines: string[] = [];
+  let currentLine = "";
+  let truncated = false;
+
+  const pushCurrentLine = () => {
+    if (currentLine.trim()) {
+      lines.push(currentLine.trim());
+      currentLine = "";
+    }
+  };
+
+  for (let index = 0; index < words.length; index += 1) {
+    const word = words[index];
+    const candidate = currentLine ? `${currentLine} ${word}` : word;
+
+    if (estimateTextWidth(candidate, input.fontSize) <= safeWidth) {
+      currentLine = candidate;
+      continue;
+    }
+
+    if (!currentLine) {
+      currentLine = fitWithEllipsis(word, safeWidth, input.fontSize);
+      pushCurrentLine();
+    } else {
+      pushCurrentLine();
+      currentLine =
+        estimateTextWidth(word, input.fontSize) <= safeWidth
+          ? word
+          : fitWithEllipsis(word, safeWidth, input.fontSize);
+    }
+
+    if (lines.length >= input.maxLines) {
+      truncated = true;
+      break;
+    }
+  }
+
+  if (!truncated && currentLine.trim()) {
+    lines.push(currentLine.trim());
+  }
+
+  if (lines.length > input.maxLines) {
+    lines.length = input.maxLines;
+    truncated = true;
+  }
+
+  if (truncated || lines.length > input.maxLines) {
+    lines[lines.length - 1] = fitWithEllipsis(lines[lines.length - 1], safeWidth, input.fontSize);
+  } else if (lines.length === input.maxLines) {
+    const consumedWords = lines.join(" ").split(" ").length;
+    if (consumedWords < words.length) {
+      truncated = true;
+      lines[lines.length - 1] = fitWithEllipsis(lines[lines.length - 1], safeWidth, input.fontSize);
+    }
+  }
+
+  return {
+    lines: lines.slice(0, input.maxLines),
+    truncated
+  };
+}
+
+function pickFallbackTitle(language: Language, variant: MediaDesignVariant): string {
+  const source = language === "en" ? EN_SAFE_TITLES : RU_SAFE_TITLES;
+  const variantIndex = MEDIA_DESIGN_VARIANTS.indexOf(variant);
+  const safeIndex = variantIndex >= 0 ? variantIndex : 0;
+  return source[safeIndex % source.length];
+}
+
+function resolveTitleLayout(input: {
+  rawTitle: string | null | undefined;
+  language: Language;
+  variant: MediaDesignVariant;
+  maxWidth: number;
+  maxHeight: number;
+}): TitleLayout {
+  const limit = input.language === "ru" ? 52 : 48;
+  const cleaned = sanitizeMedicalTitle(String(input.rawTitle ?? ""));
+  const initialTitle = cleaned.length > 0 && cleaned.length <= limit ? cleaned : pickFallbackTitle(input.language, input.variant);
+  const titleChangedFromInput = cleaned !== initialTitle;
+
+  const tryLayout = (titleCandidate: string): TitleLayout | null => {
+    for (const fontSize of TITLE_FONT_SIZE_STEPS) {
+      const wrapped = wrapText({
+        text: titleCandidate,
+        maxWidth: input.maxWidth,
+        fontSize,
+        maxLines: 2
+      });
+      const lineHeight = Math.round(fontSize * TITLE_LINE_HEIGHT_RATIO);
+      const totalHeight = wrapped.lines.length * lineHeight;
+      if (wrapped.lines.length > 0 && wrapped.lines.length <= 2 && totalHeight <= input.maxHeight) {
+        return {
+          title: titleCandidate,
+          lines: wrapped.lines,
+          fontSize,
+          wasTruncated: wrapped.truncated || titleChangedFromInput
+        };
+      }
+    }
+    return null;
+  };
+
+  const primary = tryLayout(initialTitle);
+  if (primary) {
+    return primary;
+  }
+
+  const fallback = pickFallbackTitle(input.language, input.variant);
+  const fallbackLayout = tryLayout(fallback);
+  if (fallbackLayout) {
+    return {
+      ...fallbackLayout,
+      wasTruncated: true
+    };
+  }
+
+  const forcedFontSize = 48;
+  const wrapped = wrapText({
+    text: fallback,
+    maxWidth: input.maxWidth,
+    fontSize: forcedFontSize,
+    maxLines: 2
+  });
+  return {
+    title: fallback,
+    lines: wrapped.lines.slice(0, 2),
+    fontSize: forcedFontSize,
+    wasTruncated: true
+  };
+}
+
+function buildOverlaySvg(input: {
+  variant: MediaDesignVariant;
+  titleLines: string[];
+  titleFontSize: number;
+  brand: string;
+  handle: string;
+  disclaimer: string;
+}): Buffer {
+  const style = VARIANT_STYLES[input.variant];
+  const innerX = OUTER_PADDING;
+  const innerY = OUTER_PADDING;
+  const innerW = CANVAS_WIDTH - OUTER_PADDING * 2;
+
+  const topCardY = innerY;
+  const topCardH = style.topCardHeight;
+  const gapTopToImage = 22;
+  const gapImageToBottom = 22;
+  const bottomCardY = CANVAS_HEIGHT - OUTER_PADDING - style.bottomCardHeight;
+  const imageY = topCardY + topCardH + gapTopToImage;
+  const imageH = bottomCardY - gapImageToBottom - imageY;
+
+  const titleStartX = innerX + 44;
+  const tagY = topCardY + 42;
+  const titleStartY = topCardY + 100;
+  const titleLineHeight = Math.round(input.titleFontSize * TITLE_LINE_HEIGHT_RATIO);
+
   const brand = escapeXml(input.brand);
   const handle = escapeXml(input.handle);
   const disclaimer = escapeXml(input.disclaimer);
+  const titleLinesSvg = input.titleLines
+    .map(
+      (line, index) =>
+        `<text x="${titleStartX}" y="${titleStartY + index * titleLineHeight}" font-size="${input.titleFontSize}" font-family="Arial, Helvetica, sans-serif" font-weight="700" fill="${style.titleColor}">${escapeXml(line)}</text>`
+    )
+    .join("");
+
   const svg = `
   <svg width="${CANVAS_WIDTH}" height="${CANVAS_HEIGHT}" xmlns="http://www.w3.org/2000/svg">
     <defs>
       <linearGradient id="bgGradient" x1="0" y1="0" x2="0" y2="1">
-        <stop offset="0%" stop-color="#f4f8fc" />
-        <stop offset="100%" stop-color="#edf4fb" />
+        <stop offset="0%" stop-color="${style.gradientStart}" />
+        <stop offset="100%" stop-color="${style.gradientEnd}" />
       </linearGradient>
-      <filter id="shadow" x="-20%" y="-20%" width="140%" height="140%">
-        <feDropShadow dx="0" dy="10" stdDeviation="12" flood-color="#17324f" flood-opacity="0.12" />
+      <filter id="softShadow" x="-20%" y="-20%" width="140%" height="140%">
+        <feDropShadow dx="0" dy="10" stdDeviation="14" flood-color="#15324d" flood-opacity="${style.imageShadowOpacity}" />
       </filter>
     </defs>
     <rect x="0" y="0" width="${CANVAS_WIDTH}" height="${CANVAS_HEIGHT}" fill="url(#bgGradient)" />
-    <rect x="56" y="148" rx="34" ry="34" width="968" height="986" fill="#ffffff" filter="url(#shadow)" />
-    <rect x="72" y="164" rx="26" ry="26" width="936" height="954" fill="none" stroke="#d9e7f5" stroke-width="2" />
-    <rect x="72" y="56" rx="24" ry="24" width="936" height="112" fill="#ffffff" stroke="#d9e7f5" />
-    <text x="108" y="124" font-size="44" font-family="Arial, Helvetica, sans-serif" font-weight="700" fill="#16324f">${title}</text>
-    <rect x="72" y="1150" rx="22" ry="22" width="936" height="140" fill="#ffffff" stroke="#d9e7f5" />
-    <text x="108" y="1205" font-size="34" font-family="Arial, Helvetica, sans-serif" font-weight="700" fill="#16324f">${brand}</text>
-    <text x="108" y="1245" font-size="30" font-family="Arial, Helvetica, sans-serif" font-weight="600" fill="#2f6ea6">${handle}</text>
-    <text x="108" y="1278" font-size="22" font-family="Arial, Helvetica, sans-serif" fill="#667b92">${disclaimer}</text>
+
+    <rect x="${innerX}" y="${topCardY}" rx="28" ry="28" width="${innerW}" height="${topCardH}" fill="${style.topCardFill}" stroke="${style.topCardStroke}" stroke-width="2" />
+    <text x="${titleStartX}" y="${tagY}" font-size="26" font-family="Arial, Helvetica, sans-serif" font-weight="600" fill="${style.handleColor}">MC Clinic Medical</text>
+    ${titleLinesSvg}
+
+    <rect x="${innerX}" y="${imageY}" rx="28" ry="28" width="${innerW}" height="${imageH}" fill="#ffffff" fill-opacity="0.04" filter="url(#softShadow)" />
+    <rect x="${innerX + 2}" y="${imageY + 2}" rx="26" ry="26" width="${innerW - 4}" height="${imageH - 4}" fill="none" stroke="#e0e9f3" stroke-width="2" />
+
+    <rect x="${innerX}" y="${bottomCardY}" rx="26" ry="26" width="${innerW}" height="${style.bottomCardHeight}" fill="${style.bottomCardFill}" stroke="${style.bottomCardStroke}" stroke-width="2" />
+    <text x="${innerX + 38}" y="${bottomCardY + 60}" font-size="36" font-family="Arial, Helvetica, sans-serif" font-weight="700" fill="${style.brandColor}">${brand}</text>
+    <text x="${innerX + 38}" y="${bottomCardY + 102}" font-size="30" font-family="Arial, Helvetica, sans-serif" font-weight="600" fill="${style.handleColor}">${handle}</text>
+    <text x="${innerX + 38}" y="${bottomCardY + 140}" font-size="24" font-family="Arial, Helvetica, sans-serif" fill="${style.disclaimerColor}">${disclaimer}</text>
+
+    <circle cx="${innerX + innerW - 88}" cy="${bottomCardY + 74}" r="30" fill="#e8f1fb" stroke="#b8cee2" />
+    <rect x="${innerX + innerW - 92}" y="${bottomCardY + 56}" width="8" height="36" rx="4" fill="#2f6a9a" />
+    <rect x="${innerX + innerW - 106}" y="${bottomCardY + 70}" width="36" height="8" rx="4" fill="#2f6a9a" />
   </svg>`;
   return Buffer.from(svg);
 }
 
+type CreateBrandedPostImageInput = {
+  sourcePath: string;
+  language: Language;
+  title?: string | null;
+  brand?: string;
+  handle?: string;
+  disclaimer?: string;
+  outputPath?: string;
+  variant?: MediaDesignVariant;
+};
+
 export class MediaDesignService {
-  async createBrandedPostImage(input: {
-    sourcePath: string;
-    language: Language;
-    title?: string | null;
-    brand?: string;
-    handle?: string;
-    disclaimer?: string;
-    outputPath?: string;
-  }): Promise<{ outputPath: string; designVersion: string; titleUsed: string }> {
-    const titleUsed = resolveDesignTitle(input.title, input.language);
+  private variantCursor = 0;
+
+  private pickVariant(explicitVariant?: MediaDesignVariant): MediaDesignVariant {
+    if (explicitVariant) {
+      return explicitVariant;
+    }
+    const next = MEDIA_DESIGN_VARIANTS[this.variantCursor % MEDIA_DESIGN_VARIANTS.length];
+    this.variantCursor += 1;
+    return next;
+  }
+
+  async createBrandedPostImage(input: CreateBrandedPostImageInput): Promise<{
+    outputPath: string;
+    designVersion: string;
+    designVariant: MediaDesignVariant;
+    titleUsed: string;
+    titleLines: string[];
+    titleWasTruncated: boolean;
+  }> {
+    const designVariant = this.pickVariant(input.variant);
+    const style = VARIANT_STYLES[designVariant];
+
     const brand = input.brand ?? "MC Clinic Medical";
     const handle = input.handle ?? "@mc_clinic.du";
     const disclaimer = input.disclaimer ?? "Информация носит ознакомительный характер";
@@ -99,14 +413,29 @@ export class MediaDesignService {
       path.resolve(process.cwd(), "tmp", "processed-media", `post-${Date.now()}-${randomUUID()}.jpg`);
     await ensureDir(path.dirname(outputPath));
 
+    const innerW = CANVAS_WIDTH - OUTER_PADDING * 2;
+    const imageY = OUTER_PADDING + style.topCardHeight + 22;
+    const bottomCardY = CANVAS_HEIGHT - OUTER_PADDING - style.bottomCardHeight;
+    const imageH = bottomCardY - 22 - imageY;
+
+    const titleLayout = resolveTitleLayout({
+      rawTitle: input.title,
+      language: input.language,
+      variant: designVariant,
+      maxWidth: innerW - 88,
+      maxHeight: style.topCardHeight - 78
+    });
+
     const preparedSource = await sharp(input.sourcePath)
       .rotate()
-      .resize(900, 910, { fit: "cover", position: "attention" })
+      .resize(innerW, imageH, { fit: "cover", position: "attention" })
       .jpeg({ quality: 93, mozjpeg: true })
       .toBuffer();
 
     const overlay = buildOverlaySvg({
-      title: titleUsed,
+      variant: designVariant,
+      titleLines: titleLayout.lines,
+      titleFontSize: titleLayout.fontSize,
       brand,
       handle,
       disclaimer
@@ -117,20 +446,23 @@ export class MediaDesignService {
         width: CANVAS_WIDTH,
         height: CANVAS_HEIGHT,
         channels: 3,
-        background: "#f4f8fc"
+        background: "#f5f9fd"
       }
     })
       .composite([
-        { input: overlay, top: 0, left: 0 },
-        { input: preparedSource, top: 190, left: 90 }
+        { input: preparedSource, top: imageY, left: OUTER_PADDING },
+        { input: overlay, top: 0, left: 0 }
       ])
       .jpeg({ quality: 93, mozjpeg: true })
       .toFile(outputPath);
 
     return {
       outputPath,
-      designVersion: DESIGN_VERSION,
-      titleUsed
+      designVersion: `${DESIGN_VERSION}/${designVariant}`,
+      designVariant,
+      titleUsed: titleLayout.title,
+      titleLines: titleLayout.lines,
+      titleWasTruncated: titleLayout.wasTruncated
     };
   }
 }
