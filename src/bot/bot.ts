@@ -1,4 +1,5 @@
 import dayjs from "dayjs";
+import fsSync from "node:fs";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { Context, Markup, Telegraf } from "telegraf";
@@ -110,36 +111,26 @@ function buildActionKeyboard(contentId: number) {
   ]);
 }
 
+function buildDesignFailureKeyboard(contentId: number) {
+  return Markup.inlineKeyboard([
+    [
+      Markup.button.callback("Try design again", `regenerate_design:${contentId}`),
+      Markup.button.callback("Use original photo", `use_original:${contentId}`)
+    ],
+    [Markup.button.callback("Cancel", `cancel:${contentId}`)]
+  ]);
+}
+
 function formatGeneratedPreview(payload: {
   contentId: number;
-  captions: string[];
-  hashtags: string[];
-  cta: string;
-  storyText: string;
-  reelIdea?: string | null;
-  riskWarning?: string | null;
-  safeRewriteHint?: string | null;
   finalCaption: string;
   captionWarning?: string;
-  designWarning?: string;
   useOriginalMedia: boolean;
 }): string {
   return [
     `Draft #${payload.contentId}`,
     payload.useOriginalMedia ? "⚠️ Будет опубликовано исходное фото без дизайна." : "",
-    payload.designWarning ? `⚠️ ${payload.designWarning}` : "",
     payload.captionWarning ? `⚠️ ${payload.captionWarning}` : "",
-    "",
-    "Caption options:",
-    ...payload.captions.map((caption, index) => `${index + 1}. ${caption}`),
-    "",
-    `CTA: ${payload.cta}`,
-    "",
-    `Hashtags: ${payload.hashtags.join(" ")}`,
-    payload.reelIdea ? `\nReel idea: ${payload.reelIdea}` : "",
-    payload.riskWarning ? `\nSafety warning: ${payload.riskWarning}` : "",
-    payload.safeRewriteHint ? `\nSafer wording hint: ${payload.safeRewriteHint}` : "",
-    payload.storyText ? `\nStory text: ${payload.storyText}` : "",
     "",
     "Текст, который будет опубликован в Instagram:",
     payload.finalCaption
@@ -174,6 +165,20 @@ async function sendPreviewPhotoIfExists(ctx: Context, previewPath: string | null
   }
 }
 
+async function inspectSourcePath(localPath: string): Promise<{ exists: boolean; fileSize: number }> {
+  if (!localPath || /^https?:\/\//i.test(localPath)) {
+    return { exists: false, fileSize: 0 };
+  }
+  if (!fsSync.existsSync(localPath)) {
+    return { exists: false, fileSize: 0 };
+  }
+  const stat = await fs.stat(localPath);
+  return {
+    exists: true,
+    fileSize: stat.size
+  };
+}
+
 export function createTelegramBot(input: {
   db: AppDatabase;
   aiService: OpenAiService;
@@ -206,7 +211,12 @@ export function createTelegramBot(input: {
     media: DbMediaItem;
     payload: GeneratedPayload;
     forceUseOriginal?: boolean;
-  }): Promise<{ finalCaption: string; captionWarning?: string; designWarning?: string; useOriginalMedia: boolean }> => {
+  }): Promise<{
+    finalCaption: string;
+    captionWarning?: string;
+    useOriginalMedia: boolean;
+    designFailed: boolean;
+  }> => {
     const selectedCaption = args.payload.captions[0] ?? "";
     db.selectCaption(args.contentId, selectedCaption);
 
@@ -219,11 +229,21 @@ export function createTelegramBot(input: {
     db.setFinalInstagramCaption(args.contentId, formatted.caption);
     db.setUseOriginalMedia(args.contentId, args.forceUseOriginal ? true : false);
 
-    let designWarning: string | undefined;
     let useOriginalMedia = Boolean(args.forceUseOriginal);
+    let designFailed = false;
     let previewPath: string | null = null;
 
     if (!useOriginalMedia) {
+      const inputKind = /^https:\/\//i.test(args.media.local_path) ? "url" : "path";
+      const sourcePathDebug = await inspectSourcePath(args.media.local_path);
+      botLogger.info("media design input debug", {
+        draftId: args.contentId,
+        mediaItemId: args.media.id,
+        input_kind: inputKind,
+        input_path_exists: sourcePathDebug.exists ? "yes" : "no",
+        input_file_size: sourcePathDebug.fileSize
+      });
+
       try {
         if (args.media.media_type === "image") {
           const imageDesign = await mediaDesignService.createBrandedPostImage({
@@ -243,6 +263,23 @@ export function createTelegramBot(input: {
             mediaDesignVersion: imageDesign.designVersion
           });
           previewPath = imageDesign.outputPath;
+          botLogger.info("media design output debug", {
+            draftId: args.contentId,
+            mediaItemId: args.media.id,
+            input_kind: imageDesign.source.inputKind,
+            input_path_exists: imageDesign.source.pathExists ? "yes" : "no",
+            input_file_size: imageDesign.source.fileSize,
+            original_image_width: imageDesign.source.width,
+            original_image_height: imageDesign.source.height,
+            design_variant: imageDesign.designVariant,
+            image_area_mode: imageDesign.imageAreaMode,
+            output_width: imageDesign.output.width,
+            output_height: imageDesign.output.height,
+            output_file_size: imageDesign.output.fileSize,
+            processed_image_path: imageDesign.outputPath,
+            processed_image_uploaded: "yes",
+            processed_media_url_exists: uploaded.publicUrl ? "yes" : "no"
+          });
         } else {
           const videoDesign = await videoDesignService.createStyledReel({
             sourcePath: args.media.local_path,
@@ -261,7 +298,19 @@ export function createTelegramBot(input: {
             mediaDesignVersion: videoDesign.designVersion
           });
           previewPath = videoDesign.coverImagePath;
-          designWarning = videoDesign.warning;
+          botLogger.info("media design output debug", {
+            draftId: args.contentId,
+            mediaItemId: args.media.id,
+            input_kind: "path",
+            input_path_exists: sourcePathDebug.exists ? "yes" : "no",
+            input_file_size: sourcePathDebug.fileSize,
+            design_variant: "video-preview",
+            image_area_mode: "video-cover",
+            processed_image_path: videoDesign.coverImagePath,
+            processed_image_uploaded: "yes",
+            processed_media_url_exists: uploaded.publicUrl ? "yes" : "no",
+            warning: videoDesign.warning ?? null
+          });
         }
       } catch (error) {
         const appError = toAppError(error, "Media design processing failed");
@@ -269,9 +318,16 @@ export function createTelegramBot(input: {
           mediaItemId: args.media.id,
           mediaProcessingStatus: "failed"
         });
-        db.setUseOriginalMedia(args.contentId, true);
-        useOriginalMedia = true;
-        designWarning = `Не удалось создать дизайн: ${appError.message}`;
+        db.setUseOriginalMedia(args.contentId, false);
+        designFailed = true;
+        botLogger.warn("media design failed", {
+          draftId: args.contentId,
+          mediaItemId: args.media.id,
+          processed_image_uploaded: "no",
+          processed_media_url_exists: "no",
+          code: appError.code,
+          message: appError.message
+        });
       }
     }
 
@@ -279,8 +335,8 @@ export function createTelegramBot(input: {
     return {
       finalCaption: formatted.caption,
       captionWarning: formatted.warning,
-      designWarning,
-      useOriginalMedia
+      useOriginalMedia,
+      designFailed
     };
   };
 
@@ -292,19 +348,18 @@ export function createTelegramBot(input: {
     forceUseOriginal?: boolean;
   }): Promise<void> => {
     const designResult = await prepareMediaDesignAndPreview(args);
+    if (designResult.designFailed) {
+      await args.ctx.reply(
+        "Не удалось создать дизайн изображения. Можно использовать оригинал или попробовать снова.",
+        buildDesignFailureKeyboard(args.contentId)
+      );
+      return;
+    }
     await args.ctx.reply(
       formatGeneratedPreview({
         contentId: args.contentId,
-        captions: args.payload.captions,
-        hashtags: args.payload.hashtags,
-        cta: args.payload.cta,
-        storyText: args.payload.storyText,
-        reelIdea: args.payload.reelIdea,
-        riskWarning: args.payload.riskWarning,
-        safeRewriteHint: args.payload.safeRewriteHint,
         finalCaption: designResult.finalCaption,
         captionWarning: designResult.captionWarning,
-        designWarning: designResult.designWarning,
         useOriginalMedia: designResult.useOriginalMedia
       }),
       buildActionKeyboard(args.contentId)
