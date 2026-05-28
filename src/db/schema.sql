@@ -40,6 +40,8 @@ CREATE TABLE IF NOT EXISTS generated_contents (
   safe_rewrite_hint TEXT,
   visual_title TEXT,
   visual_subtitle TEXT,
+  overlay_bullets_json TEXT,
+  overlay_density TEXT,
   design_hint TEXT,
   design_variant TEXT,
   design_seed TEXT,

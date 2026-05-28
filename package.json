@@ -22,6 +22,7 @@
     "test:design-variants": "tsx src/scripts/test-design-variants.ts",
     "test:caption-format": "tsx src/scripts/test-caption-format.ts",
     "test:assistant": "tsx src/scripts/test-assistant.ts",
+    "test:draft-instructions": "tsx src/scripts/test-draft-instructions.ts",
     "debug:instagram-access": "tsx src/scripts/debug-instagram-access.ts"
   },
   "keywords": [

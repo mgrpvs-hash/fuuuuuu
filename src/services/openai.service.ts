@@ -2,9 +2,13 @@ import OpenAI from "openai";
 
 import { env } from "../config/env.js";
 import { contentGenerationSchema } from "../prompts/schemas/content-generation.schema.js";
+import { draftEditGenerationSchema } from "../prompts/schemas/draft-edit-generation.schema.js";
+import { draftInstructionClassificationSchema } from "../prompts/schemas/draft-instruction-classification.schema.js";
 import { textPosterGenerationSchema } from "../prompts/schemas/text-poster-generation.schema.js";
+import { DRAFT_EDIT_SYSTEM_PROMPT } from "../prompts/system/draft-edit.system.prompt.js";
 import { MEDICAL_CONTENT_SYSTEM_PROMPT } from "../prompts/system/medical-content.system.prompt.js";
 import { TEXT_POSTER_SYSTEM_PROMPT } from "../prompts/system/text-poster.system.prompt.js";
+import { buildDraftEditUserPrompt } from "../prompts/user/draft-edit.user.prompt.js";
 import { buildContentGenerationUserPrompt } from "../prompts/user/content-generation.user.prompt.js";
 import { buildTextPosterUserPrompt } from "../prompts/user/text-poster.user.prompt.js";
 import { GeneratedContentPayload, PosterGeneratedContentPayload } from "../types/domain.js";
@@ -201,6 +205,121 @@ export class OpenAiService {
         throw error;
       }
       throw new AppError("Failed to generate text poster content using OpenAI", {
+        code: "EXTERNAL_SERVICE_ERROR",
+        statusCode: 502,
+        cause: error
+      });
+    }
+  }
+
+  async classifyDraftInstructionLLM(input: {
+    userText: string;
+    draftContext: string;
+    language: "ru" | "en";
+  }): Promise<{
+    intent: string;
+    confidence: number;
+    params: Record<string, unknown>;
+    userFacingSummary: string;
+  } | null> {
+    const userPrompt = `
+${input.language === "ru" ? "Отвечай на русском." : "Reply in English."}
+
+Classify the draft-edit instruction and return JSON:
+{
+  "intent": "...",
+  "confidence": 0.0,
+  "params": {...},
+  "userFacingSummary": "..."
+}
+
+Allowed intents:
+edit_caption, edit_design, edit_overlay_text, increase_overlay_text, decrease_overlay_text,
+change_style, regenerate_design, regenerate_text, remove_hashtags, use_original, cancel,
+schedule, approve_intent, create_carousel_suggestion, clarify
+
+Draft context:
+${input.draftContext}
+
+User text:
+"${input.userText}"
+`.trim();
+
+    try {
+      const response = await this.client.responses.create({
+        model: env.OPENAI_MODEL,
+        input: [
+          {
+            role: "system",
+            content:
+              "You classify Instagram draft edit commands for a medical clinic assistant. Return JSON only."
+          },
+          { role: "user", content: userPrompt }
+        ]
+      });
+      const raw = response.output_text?.trim();
+      if (!raw) return null;
+      const parsed = draftInstructionClassificationSchema.parse(JSON.parse(extractJsonPayload(raw)));
+      return {
+        intent: parsed.intent,
+        confidence: parsed.confidence,
+        params: parsed.params as Record<string, unknown>,
+        userFacingSummary: parsed.userFacingSummary
+      };
+    } catch (error) {
+      this.serviceLogger.warn("Draft instruction LLM classifier failed", {
+        error: error instanceof Error ? error.message : String(error)
+      });
+      return null;
+    }
+  }
+
+  async generateDraftEditContent(input: {
+    language: "ru" | "en";
+    instruction: string;
+    draftContext: string;
+  }): Promise<{
+    visualTitle: string;
+    visualSubtitle: string;
+    overlayBullets: string[];
+    finalCaption: string;
+    hashtags: string[];
+    cta: string;
+    designHint: string;
+    overlayDensity: "minimal" | "medium" | "detailed";
+  }> {
+    const prompt = buildDraftEditUserPrompt(input);
+    try {
+      const response = await this.client.responses.create({
+        model: env.OPENAI_MODEL,
+        input: [
+          { role: "system", content: DRAFT_EDIT_SYSTEM_PROMPT },
+          { role: "user", content: prompt }
+        ]
+      });
+      const raw = response.output_text?.trim();
+      if (!raw) {
+        throw new AppError("OpenAI returned empty draft edit output", {
+          code: "EXTERNAL_SERVICE_ERROR",
+          statusCode: 502
+        });
+      }
+      const parsed = draftEditGenerationSchema.parse(JSON.parse(extractJsonPayload(raw)));
+      return {
+        visualTitle: parsed.visual_title,
+        visualSubtitle: parsed.visual_subtitle,
+        overlayBullets: parsed.overlay_bullets,
+        finalCaption: parsed.final_caption,
+        hashtags: parsed.hashtags,
+        cta: parsed.cta,
+        designHint: parsed.design_hint,
+        overlayDensity: parsed.overlay_density
+      };
+    } catch (error) {
+      this.serviceLogger.error("OpenAI draft edit generation failed", {
+        error: error instanceof Error ? error.message : String(error)
+      });
+      throw new AppError("Failed to generate draft edit content using OpenAI", {
         code: "EXTERNAL_SERVICE_ERROR",
         statusCode: 502,
         cause: error

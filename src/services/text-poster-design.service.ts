@@ -193,6 +193,8 @@ export class TextPosterDesignService {
     visualTitle: string;
     visualSubtitle?: string;
     shortOverlayText?: string;
+    bulletPoints?: string[];
+    overlayDensity?: "minimal" | "medium" | "detailed";
     outputPath?: string;
   }): Promise<{
     outputPath: string;
@@ -203,6 +205,8 @@ export class TextPosterDesignService {
     subtitle: string;
     disclaimer: string;
     designVersion: string;
+    overlayDensity: "minimal" | "medium" | "detailed";
+    bulletCount: number;
   }> {
     const variant = chooseStyleVariant({
       userPrompt: input.userPrompt,
@@ -229,23 +233,34 @@ export class TextPosterDesignService {
     const titleLines = wrap(title, contentWidth, titleSize, 2);
     const subtitleLines = wrap(subtitle, contentWidth, subtitleSize, 2);
 
-    const bulletSource = wrap(
-      (input.shortOverlayText ?? subtitle).replace(/\.$/, ""),
-      contentWidth - 90,
-      bulletSize,
-      3
-    ).slice(0, 3);
+    const overlayDensity = input.overlayDensity ?? (variant === "educational_card" ? "detailed" : "medium");
+    const rawBulletCandidates =
+      input.bulletPoints && input.bulletPoints.length
+        ? input.bulletPoints
+        : wrap((input.shortOverlayText ?? subtitle).replace(/\.$/, ""), contentWidth - 90, bulletSize, 3);
+    const bulletSource = rawBulletCandidates
+      .map((line) => line.replace(/\s+/g, " ").trim())
+      .filter(Boolean)
+      .slice(0, 3)
+      .map((line) => {
+        const limit = input.language === "en" ? 50 : 55;
+        return line.length > limit ? `${line.slice(0, limit - 1).trimEnd()}…` : line;
+      });
 
     const titleLineHeight = Math.round(titleSize * 1.12);
     const subtitleLineHeight = Math.round(subtitleSize * 1.2);
+    const subtitleLinesToRender = overlayDensity === "minimal" ? [] : subtitleLines;
     const titleStartY = PADDING + 150;
     const subtitleStartY = titleStartY + titleLines.length * titleLineHeight + 26;
-    const bulletStartY = subtitleStartY + subtitleLines.length * subtitleLineHeight + 40;
+    const bulletStartY = subtitleStartY + subtitleLinesToRender.length * subtitleLineHeight + 40;
     const brandY = HEIGHT - PADDING - 84;
+    const maxBulletBySpace = Math.max(0, Math.min(3, Math.floor((brandY - 24 - bulletStartY) / 42)));
+    const bulletLinesToRender = bulletSource.slice(0, maxBulletBySpace);
 
     const bulletSvg =
-      variant === "morning_health" || variant === "medical_tip" || variant === "educational_card"
-        ? bulletSource
+      overlayDensity === "detailed" &&
+      (variant === "morning_health" || variant === "medical_tip" || variant === "educational_card" || variant === "service_card")
+        ? bulletLinesToRender
             .map(
               (line, index) =>
                 `<text x="${PADDING + 22}" y="${bulletStartY + index * 42}" font-size="${bulletSize}" font-family="Arial, Helvetica, sans-serif" fill="${theme.subtitle}">• ${escapeXml(line)}</text>`
@@ -280,7 +295,7 @@ export class TextPosterDesignService {
               `<text x="${PADDING + 20}" y="${titleStartY + index * titleLineHeight}" font-size="${titleSize}" font-family="Arial, Helvetica, sans-serif" font-weight="700" fill="${theme.title}">${escapeXml(line)}</text>`
           )
           .join("")}
-        ${subtitleLines
+        ${subtitleLinesToRender
           .map(
             (line, index) =>
               `<text x="${PADDING + 20}" y="${subtitleStartY + index * subtitleLineHeight}" font-size="${subtitleSize}" font-family="Arial, Helvetica, sans-serif" font-weight="500" fill="${theme.subtitle}">${escapeXml(line)}</text>`
@@ -306,7 +321,9 @@ export class TextPosterDesignService {
       title,
       subtitle,
       disclaimer,
-      designVersion: `${VERSION}/${variant}`
+      designVersion: `${VERSION}/${variant}`,
+      overlayDensity,
+      bulletCount: overlayDensity === "detailed" ? bulletLinesToRender.length : 0
     };
   }
 }

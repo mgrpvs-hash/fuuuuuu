@@ -7,6 +7,7 @@ import { AppDatabase } from "./db/database.js";
 import { AssistantCommandService } from "./services/assistant-command.service.js";
 import { ContentWorkflowService } from "./services/content-workflow.service.js";
 import { DesignSelectionService } from "./services/design-selection.service.js";
+import { DraftEditService } from "./services/draft-edit.service.js";
 import { InstagramService } from "./services/instagram.service.js";
 import { MediaDesignService } from "./services/media-design.service.js";
 import { MediaValidationService } from "./services/media-validation.service.js";
@@ -61,6 +62,7 @@ async function bootstrap(): Promise<void> {
   const designSelectionService = new DesignSelectionService();
   const assistantCommandService = new AssistantCommandService();
   const aiService = new OpenAiService();
+  const draftEditService = new DraftEditService(db, assistantCommandService, aiService);
   const instagramService = new InstagramService();
   const workflowService = new ContentWorkflowService(
     db,
@@ -85,6 +87,7 @@ async function bootstrap(): Promise<void> {
     videoDesignService,
     designSelectionService,
     assistantCommandService,
+    draftEditService,
     rateLimitService
   });
 

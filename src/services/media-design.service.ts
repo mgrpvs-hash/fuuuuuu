@@ -87,6 +87,7 @@ type CreateBrandedPostImageInput = {
   title?: string | null;
   subtitle?: string | null;
   bulletPoints?: string[];
+  overlayDensity?: "minimal" | "medium" | "detailed";
   brand?: string;
   handle?: string;
   disclaimer?: string;
@@ -122,6 +123,8 @@ type CreateBrandedPostImageResult = {
     imageZone: { x: number; y: number; width: number; height: number };
     bottomZone: { x: number; y: number; width: number; height: number };
     iconEnabled: boolean;
+    overlayDensity: "minimal" | "medium" | "detailed";
+    bulletCount: number;
   };
 };
 
@@ -414,7 +417,7 @@ function resolveBottomTypography(input: {
   let brandSize = 36;
   let handleSize = 30;
   let disclaimerSize = 24;
-  let iconEnabled = input.template.showMedicalCrossByDefault;
+  let iconEnabled = false;
 
   const cardPadding = 32;
   const iconZoneWidth = 92;
@@ -639,28 +642,59 @@ export class MediaDesignService {
     });
 
     const topTitleLineHeight = Math.round(titleLayout.fontSize * TITLE_LINE_HEIGHT_RATIO);
+    const subtitleSize = 30;
+    const subtitleLineHeight = Math.round(subtitleSize * 1.2);
+    const overlayDensity = input.overlayDensity ?? (designVariant === "educational" ? "detailed" : "medium");
     const topTitleY = template.topZone.y + 84;
     const topTitleX = template.topZone.x + 34;
     const topTagY = template.topZone.y + 40;
+    const subtitleMaxWidth = template.topZone.width - 68;
+    const subtitleText =
+      overlayDensity === "minimal"
+        ? ""
+        : fitWithEllipsis(
+            sanitizeMedicalTitle(input.subtitle ?? ""),
+            subtitleMaxWidth,
+            subtitleSize
+          );
+    const subtitleY = topTitleY + titleLayout.lines.length * topTitleLineHeight + 30;
     const textBlockX = template.bottomZone.x + 34;
     const textBlockY = template.bottomZone.y + 52;
     const iconX = template.bottomZone.x + template.bottomZone.width - 74;
     const iconY = template.bottomZone.y + 44;
 
+    const rawBullets = (input.bulletPoints ?? [])
+      .map((line) => sanitizeMedicalTitle(line))
+      .map((line) => {
+        const limit = input.language === "en" ? 50 : 55;
+        return line.length > limit ? `${line.slice(0, limit - 1).trimEnd()}…` : line;
+      })
+      .filter(Boolean)
+      .slice(0, 3);
+    const bulletFontSize = 28;
+    const bulletLineStep = 38;
+    const bulletStartY = textBlockY + 102;
+    const maxBulletArea = template.bottomZone.y + template.bottomZone.height - bulletStartY - 12;
+    const maxBulletCount = Math.max(0, Math.min(3, Math.floor(maxBulletArea / bulletLineStep)));
     const bulletLines =
-      designVariant === "educational"
-        ? (input.bulletPoints ?? [])
-            .map((line) => sanitizeMedicalTitle(line))
-            .filter(Boolean)
-            .slice(0, 3)
-            .map((line) => fitWithEllipsis(line, template.bottomZone.width - 90, 24))
+      overlayDensity === "detailed"
+        ? rawBullets
+            .slice(0, maxBulletCount)
+            .map((line) => fitWithEllipsis(line, template.bottomZone.width - 90, bulletFontSize))
         : [];
 
     const bulletSvg = bulletLines
-      .map(
-        (line, index) =>
-          `<text x="${textBlockX}" y="${template.bottomZone.y + 162 + index * 34}" font-size="24" font-family="Arial, Helvetica, sans-serif" font-weight="500" fill="${template.palette.disclaimer}">• ${escapeXml(line)}</text>`
-      )
+      .map((line, index) => {
+        const y = bulletStartY + index * bulletLineStep;
+        if (designVariant === "educational") {
+          const cardY = y - 28;
+          const cardHeight = 42;
+          const cardWidth = template.bottomZone.width - 68;
+          return `<rect x="${textBlockX - 10}" y="${cardY}" width="${cardWidth}" height="${cardHeight}" rx="14" fill="#eef5fc" stroke="#d3e2f1" />
+<text x="${textBlockX}" y="${y}" font-size="${bulletFontSize}" font-family="Arial, Helvetica, sans-serif" font-weight="500" fill="${template.palette.disclaimer}">• ${escapeXml(line)}</text>`;
+        }
+        return `<text x="${textBlockX}" y="${y}" font-size="${bulletFontSize}" font-family="Arial, Helvetica, sans-serif" font-weight="500" fill="${template.palette.disclaimer}">• ${escapeXml(line)}</text>`;
+      })
       .join("");
 
     const iconSvg = bottomTypography.iconEnabled
@@ -688,6 +722,11 @@ export class MediaDesignService {
         align: template.titleAlign,
         width: template.topZone.width - 68
       })}
+      ${
+        subtitleText
+          ? `<text x="${topTitleX}" y="${subtitleY}" font-size="${subtitleSize}" font-family="Arial, Helvetica, sans-serif" font-weight="500" fill="${template.palette.handle}">${escapeXml(subtitleText)}</text>`
+          : ""
+      }
 
       <rect x="${template.imageZone.x}" y="${template.imageZone.y}" rx="${template.imageZone.radius}" ry="${template.imageZone.radius}" width="${template.imageZone.width}" height="${template.imageZone.height}" fill="none" stroke="#d9e6f2" stroke-width="2" filter="url(#softShadow)" />
 
@@ -801,7 +840,9 @@ export class MediaDesignService {
           width: template.bottomZone.width,
           height: template.bottomZone.height
         },
-        iconEnabled: bottomTypography.iconEnabled
+        iconEnabled: bottomTypography.iconEnabled,
+        overlayDensity,
+        bulletCount: bulletLines.length
       }
     };
   }

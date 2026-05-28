@@ -11,6 +11,7 @@ import { AssistantCommandService } from "../services/assistant-command.service.j
 import { formatInstagramCaption } from "../services/caption-formatter.service.js";
 import { ContentWorkflowService } from "../services/content-workflow.service.js";
 import { DesignSelectionService } from "../services/design-selection.service.js";
+import { DraftEditService } from "../services/draft-edit.service.js";
 import {
   MEDIA_DESIGN_VARIANTS,
   MediaDesignService,
@@ -53,6 +54,8 @@ type GeneratedPayload = {
   storyText: string;
   visualTitle?: string | null;
   visualSubtitle?: string | null;
+  overlayBullets?: string[];
+  overlayDensity?: "minimal" | "medium" | "detailed";
   designHint?: string | null;
   bulletPoints?: string[];
   reelIdea?: string | null;
@@ -112,8 +115,9 @@ function parseActionContentId(raw: string): number {
   return parsed;
 }
 
-function parseJsonStringArray(raw: string): string[] {
+function parseJsonStringArray(raw: string | null): string[] {
   try {
+    if (!raw) return [];
     const parsed = JSON.parse(raw);
     if (!Array.isArray(parsed)) {
       return [];
@@ -150,6 +154,10 @@ function buildActionKeyboard(contentId: number) {
     [
       Markup.button.callback("Remove hashtags", `caption_nohashtags:${contentId}`),
       Markup.button.callback("Use original photo", `use_original:${contentId}`)
+    ],
+    [
+      Markup.button.callback("More text on image", `more_overlay_text:${contentId}`),
+      Markup.button.callback("Less text on image", `less_overlay_text:${contentId}`)
     ],
     [
       Markup.button.callback("Schedule", `schedule:${contentId}`),
@@ -201,6 +209,20 @@ function buildDesignFailureKeyboard(contentId: number) {
       Markup.button.callback("Use original photo", `use_original:${contentId}`)
     ],
     [Markup.button.callback("Cancel", `cancel:${contentId}`)]
+  ]);
+}
+
+function buildDraftClarifyKeyboard(contentId: number) {
+  return Markup.inlineKeyboard([
+    [
+      Markup.button.callback("Изменить текст", `regenerate_text:${contentId}`),
+      Markup.button.callback("Изменить дизайн", `regenerate_design:${contentId}`)
+    ],
+    [
+      Markup.button.callback("Добавить текст на картинку", `more_overlay_text:${contentId}`),
+      Markup.button.callback("Сделать короче", `caption_shorter:${contentId}`)
+    ],
+    [Markup.button.callback("Отмена", `cancel:${contentId}`)]
   ]);
 }
 
@@ -397,6 +419,7 @@ export function createTelegramBot(input: {
   videoDesignService: VideoDesignService;
   designSelectionService: DesignSelectionService;
   assistantCommandService: AssistantCommandService;
+  draftEditService: DraftEditService;
   rateLimitService: RateLimitService;
 }): Telegraf {
   const {
@@ -411,6 +434,7 @@ export function createTelegramBot(input: {
     videoDesignService,
     designSelectionService,
     assistantCommandService,
+    draftEditService,
     rateLimitService
   } = input;
 
@@ -506,6 +530,8 @@ export function createTelegramBot(input: {
       storyText: "",
       visualTitle: poster.visualTitle,
       visualSubtitle: poster.visualSubtitle,
+      overlayBullets: [],
+      overlayDensity: "medium",
       designHint: poster.designHint
     });
     db.updateDesignMetadata({
@@ -623,7 +649,9 @@ export function createTelegramBot(input: {
               visualTitle:
                 args.payload.visualTitle ?? deriveVisualTitle(args.payload.language, draft.selected_caption ?? ""),
               visualSubtitle: args.payload.visualSubtitle ?? undefined,
-              shortOverlayText: args.payload.captions[0] ?? undefined
+              shortOverlayText: args.payload.captions[0] ?? undefined,
+              bulletPoints: args.payload.overlayBullets ?? args.payload.bulletPoints,
+              overlayDensity: args.payload.overlayDensity ?? "medium"
             });
             designVariant = posterDesign.variant;
             const uploaded = await storageService.uploadMediaFromLocal({
@@ -650,7 +678,8 @@ export function createTelegramBot(input: {
               language: args.payload.language,
               title: args.payload.visualTitle ?? deriveVisualTitle(args.payload.language, draft.selected_caption ?? ""),
               subtitle: args.payload.visualSubtitle ?? undefined,
-              bulletPoints: args.payload.bulletPoints,
+              bulletPoints: args.payload.overlayBullets ?? args.payload.bulletPoints,
+              overlayDensity: args.payload.overlayDensity ?? "medium",
               variant: (args.preferredStyle as MediaDesignVariant | undefined) ?? selection.templateId
             });
             designVariant = imageDesign.designVariant;
@@ -785,8 +814,10 @@ export function createTelegramBot(input: {
     storyText: draft.story_text,
     visualTitle: draft.visual_title,
     visualSubtitle: draft.visual_subtitle,
+    overlayBullets: parseJsonStringArray(draft.overlay_bullets_json),
+    overlayDensity: (draft.overlay_density as "minimal" | "medium" | "detailed" | null) ?? "medium",
     designHint: draft.design_hint,
-    bulletPoints: [],
+    bulletPoints: parseJsonStringArray(draft.overlay_bullets_json),
     reelIdea: draft.reel_idea,
     riskWarning: draft.risk_warning,
     safeRewriteHint: draft.safe_rewrite_hint
@@ -841,23 +872,25 @@ export function createTelegramBot(input: {
     instruction: string
   ): Promise<void> => {
     const draft = db.getGeneratedContentByIdForTelegramUser(contentId, userId);
-    const media = db.getMediaItemById(draft.media_item_id);
-    if (!media) {
-      throw new AppError("Media not found", { code: "NOT_FOUND", statusCode: 404 });
-    }
-
-    const intent = assistantCommandService.classify(instruction);
     if (assistantCommandService.isMedicalAdviceQuestion(instruction)) {
       await ctx.reply(assistantCommandService.buildMedicalSafetyReply(draft.language));
       return;
     }
 
-    if (intent.type === "approve_intent") {
+    const result = await draftEditService.applyDraftInstruction({
+      draftId: contentId,
+      userId,
+      instruction
+    });
+    const classifiedIntent = result.classification.intent;
+
+    if (result.requiresApproveButton || classifiedIntent === "approve_intent") {
       await ctx.reply("Подтвердите публикацию кнопкой Approve.");
       return;
     }
-    if (intent.type === "cancel") {
-      db.updateGeneratedStatus(draft.id, "failed");
+
+    if (classifiedIntent === "cancel") {
+      db.updateGeneratedStatus(contentId, "failed");
       const session = draftSessions.get(userId);
       if (session) {
         session.activeDraftContentId = undefined;
@@ -866,84 +899,68 @@ export function createTelegramBot(input: {
       await ctx.reply("Draft отменён.");
       return;
     }
-    if (intent.type === "use_original") {
-      db.setUseOriginalMedia(draft.id, true);
+
+    if (classifiedIntent === "use_original") {
+      db.setUseOriginalMedia(contentId, true);
+      const current = db.getGeneratedContentByIdForTelegramUser(contentId, userId);
       await ctx.reply(
         [
           "Будет опубликовано исходное фото без дизайна.",
           "",
           "Текст, который будет опубликован в Instagram:",
-          draft.final_instagram_caption ?? draft.selected_caption ?? ""
+          current.final_instagram_caption ?? current.selected_caption ?? ""
         ].join("\n"),
-        buildActionKeyboard(draft.id)
+        buildActionKeyboard(contentId)
       );
       return;
     }
-    if (intent.type === "change_language" && intent.languageHint) {
-      db.updateGeneratedLanguage(draft.id, intent.languageHint);
-      await ctx.reply(`Язык draft обновлён на ${intent.languageHint.toUpperCase()}. Нажмите Regenerate text.`);
+
+    if (classifiedIntent === "change_language" && result.classification.params.language) {
+      const language = result.classification.params.language === "EN" ? "en" : "ru";
+      db.updateGeneratedLanguage(contentId, language);
+      await ctx.reply(`Язык draft обновлён на ${language.toUpperCase()}.`);
       return;
     }
-    if (intent.type === "create_text_poster") {
-      await createTextPosterDraft({
-        ctx,
-        userId,
-        prompt: instruction
-      });
+
+    if (classifiedIntent === "schedule") {
+      await ctx.reply("Чтобы запланировать, нажмите кнопку Schedule.");
       return;
     }
-    if (intent.type === "edit_design") {
-      const preferredStyle = isGeneratedPosterMedia(media)
-        ? choosePosterStyleFromText(instruction)
-        : chooseStyleFromText(instruction);
+
+    if (result.requiresClarification) {
+      await ctx.reply(result.clarificationMessage ?? "Понял. Хотите изменить текст, дизайн или текст на картинке?", buildDraftClarifyKeyboard(contentId));
+      return;
+    }
+
+    const updatedDraft = db.getGeneratedContentByIdForTelegramUser(contentId, userId);
+    const media = db.getMediaItemById(updatedDraft.media_item_id);
+    if (!media) {
+      throw new AppError("Media not found", { code: "NOT_FOUND", statusCode: 404 });
+    }
+
+    if (result.shouldRegenerateDesign || result.shouldRegenerateText) {
+      await ctx.reply("Понял, обновляю дизайн и текст на картинке...");
       await sendDraftPreview({
         ctx,
         userId,
-        contentId: draft.id,
+        contentId: updatedDraft.id,
         media,
-        payload: getDraftPayload(draft),
-        preferredStyle
+        payload: getDraftPayload(updatedDraft),
+        preferredStyle: result.preferredStyle as MediaDesignVariant | TextPosterStyleVariant | undefined
       });
-      return;
-    }
-    if (intent.type === "edit_caption") {
-      const currentCaption = draft.final_instagram_caption ?? draft.selected_caption ?? "";
-      let updatedCaption = currentCaption;
-      let hashtags = parseJsonStringArray(draft.hashtags_json);
-      const lower = instruction.toLowerCase();
-      if (/убери хэшт|remove hashtags/.test(lower)) {
-        updatedCaption = removeHashtagsFromCaption(updatedCaption);
-        hashtags = [];
+      if (result.showCarouselSuggestion) {
+        await ctx.reply("Для такого объёма текста лучше сделать карусель из нескольких слайдов.");
       }
-      if (/короче|shorter|проще/.test(lower)) {
-        updatedCaption = shortenCaptionText(updatedCaption);
-      }
-      if (/профессиональ|more professional/.test(lower)) {
-        updatedCaption = makeCaptionMoreProfessional(updatedCaption);
-      }
-      db.updateFinalCaptionAndHashtags({
-        contentId: draft.id,
-        finalCaption: updatedCaption,
-        hashtags,
-        selectedCaption: draft.selected_caption ?? undefined
-      });
-      await ctx.reply(
-        ["Текст, который будет опубликован в Instagram:", updatedCaption].join("\n"),
-        buildActionKeyboard(draft.id)
-      );
       return;
     }
 
-    if (intent.type === "generate_ideas") {
-      await ctx.reply(await aiService.generateIdeas({ language: draft.language, count: 5 }));
-      return;
-    }
-    if (intent.type === "content_plan") {
-      await ctx.reply(await aiService.generateWeeklyContentPlan({ language: draft.language }));
-      return;
-    }
-
-    await ctx.reply("Инструкцию не удалось распознать. Попробуйте: «сделай дизайн премиальнее» или «сделай текст короче».");
+    await ctx.reply(
+      [
+        "Текст, который будет опубликован в Instagram:",
+        updatedDraft.final_instagram_caption ?? updatedDraft.selected_caption ?? ""
+      ].join("\n"),
+      buildActionKeyboard(updatedDraft.id)
+    );
   };
 
   bot.use(async (ctx, next) => {
@@ -1276,6 +1293,8 @@ export function createTelegramBot(input: {
         safeRewriteHint: generated.safeRewriteHint,
         visualTitle: generated.visualTitle,
         visualSubtitle: generated.visualSubtitle,
+        overlayBullets: generated.bulletPoints,
+        overlayDensity: generated.bulletPoints && generated.bulletPoints.length ? "detailed" : "medium",
         designHint: generated.designHint
       });
 
@@ -1301,6 +1320,8 @@ export function createTelegramBot(input: {
           storyText: generated.storyText,
           visualTitle: generated.visualTitle,
           visualSubtitle: generated.visualSubtitle,
+          overlayBullets: generated.bulletPoints,
+          overlayDensity: generated.bulletPoints && generated.bulletPoints.length ? "detailed" : "medium",
           designHint: generated.designHint,
           bulletPoints: generated.bulletPoints,
           reelIdea: generated.reelIdea,
@@ -1371,6 +1392,8 @@ export function createTelegramBot(input: {
         storyText: generated.storyText,
         visualTitle: generated.visualTitle,
         visualSubtitle: generated.visualSubtitle,
+        overlayBullets: generated.bulletPoints,
+        overlayDensity: generated.bulletPoints && generated.bulletPoints.length ? "detailed" : "medium",
         designHint: generated.designHint,
         reelIdea: generated.reelIdea,
         riskWarning: generated.riskWarning,
@@ -1391,6 +1414,8 @@ export function createTelegramBot(input: {
           storyText: generated.storyText,
           visualTitle: generated.visualTitle,
           visualSubtitle: generated.visualSubtitle,
+          overlayBullets: generated.bulletPoints,
+          overlayDensity: generated.bulletPoints && generated.bulletPoints.length ? "detailed" : "medium",
           designHint: generated.designHint,
           bulletPoints: generated.bulletPoints,
           reelIdea: generated.reelIdea,
@@ -1569,6 +1594,42 @@ export function createTelegramBot(input: {
       const appError = toAppError(error, "Caption hashtag update failed");
       await ctx.answerCbQuery();
       await ctx.reply(`Ошибка caption: ${appError.message}`);
+    }
+  });
+
+  bot.action(/^more_overlay_text:(\d+)$/, async (ctx) => {
+    const userId = getUserId(ctx);
+    if (!userId) return;
+    const contentId = parseActionContentId(ctx.match[1]);
+    await ctx.answerCbQuery();
+    try {
+      await handleDraftInstruction(
+        ctx,
+        userId,
+        contentId,
+        "добавь больше текста и разъяснений в фотку текста"
+      );
+    } catch (error) {
+      const appError = toAppError(error, "More overlay text failed");
+      await ctx.reply(`Ошибка overlay: ${appError.message}`);
+    }
+  });
+
+  bot.action(/^less_overlay_text:(\d+)$/, async (ctx) => {
+    const userId = getUserId(ctx);
+    if (!userId) return;
+    const contentId = parseActionContentId(ctx.match[1]);
+    await ctx.answerCbQuery();
+    try {
+      await handleDraftInstruction(
+        ctx,
+        userId,
+        contentId,
+        "убери текст с картинки, оставь только заголовок"
+      );
+    } catch (error) {
+      const appError = toAppError(error, "Less overlay text failed");
+      await ctx.reply(`Ошибка overlay: ${appError.message}`);
     }
   });
 

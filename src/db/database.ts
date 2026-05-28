@@ -23,6 +23,8 @@ export interface DbGeneratedContent {
   safe_rewrite_hint: string | null;
   visual_title: string | null;
   visual_subtitle: string | null;
+  overlay_bullets_json: string | null;
+  overlay_density: string | null;
   design_hint: string | null;
   design_variant: string | null;
   design_seed: string | null;
@@ -118,6 +120,14 @@ export class AppDatabase {
       {
         name: "design_hint",
         sql: "ALTER TABLE generated_contents ADD COLUMN design_hint TEXT"
+      },
+      {
+        name: "overlay_bullets_json",
+        sql: "ALTER TABLE generated_contents ADD COLUMN overlay_bullets_json TEXT"
+      },
+      {
+        name: "overlay_density",
+        sql: "ALTER TABLE generated_contents ADD COLUMN overlay_density TEXT"
       },
       {
         name: "design_variant",
@@ -244,6 +254,8 @@ export class AppDatabase {
     safeRewriteHint?: string;
     visualTitle?: string;
     visualSubtitle?: string;
+    overlayBullets?: string[];
+    overlayDensity?: "minimal" | "medium" | "detailed";
     designHint?: string;
   }): number {
     const user = this.getOrCreateUser(input.telegramUserId);
@@ -252,9 +264,9 @@ export class AppDatabase {
         `INSERT INTO generated_contents (
           user_id, media_item_id, content_type, language, description, captions_json, hashtags_json,
           cta, story_text, reel_idea, risk_warning, safe_rewrite_hint, visual_title, visual_subtitle,
-          design_hint, use_original_media,
+          overlay_bullets_json, overlay_density, design_hint, use_original_media,
           final_instagram_caption, status, created_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, NULL, 'draft', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)`
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, NULL, 'draft', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)`
       )
       .run(
         user.id,
@@ -271,6 +283,8 @@ export class AppDatabase {
         input.safeRewriteHint ?? null,
         input.visualTitle ?? null,
         input.visualSubtitle ?? null,
+        JSON.stringify(input.overlayBullets ?? []),
+        input.overlayDensity ?? "medium",
         input.designHint ?? null
       );
 
@@ -360,6 +374,44 @@ export class AppDatabase {
          WHERE id = ?`
       )
       .run(input.finalCaption, JSON.stringify(input.hashtags), input.selectedCaption ?? null, input.contentId);
+  }
+
+  updateGeneratedDraftEdit(input: {
+    contentId: number;
+    visualTitle?: string;
+    visualSubtitle?: string;
+    overlayBullets?: string[];
+    overlayDensity?: "minimal" | "medium" | "detailed";
+    cta?: string;
+    hashtags?: string[];
+    finalCaption?: string;
+    designHint?: string;
+  }): void {
+    this.db
+      .prepare(
+        `UPDATE generated_contents
+         SET visual_title = COALESCE(?, visual_title),
+             visual_subtitle = COALESCE(?, visual_subtitle),
+             overlay_bullets_json = COALESCE(?, overlay_bullets_json),
+             overlay_density = COALESCE(?, overlay_density),
+             cta = COALESCE(?, cta),
+             hashtags_json = COALESCE(?, hashtags_json),
+             final_instagram_caption = COALESCE(?, final_instagram_caption),
+             design_hint = COALESCE(?, design_hint),
+             updated_at = CURRENT_TIMESTAMP
+         WHERE id = ?`
+      )
+      .run(
+        input.visualTitle ?? null,
+        input.visualSubtitle ?? null,
+        input.overlayBullets ? JSON.stringify(input.overlayBullets) : null,
+        input.overlayDensity ?? null,
+        input.cta ?? null,
+        input.hashtags ? JSON.stringify(input.hashtags) : null,
+        input.finalCaption ?? null,
+        input.designHint ?? null,
+        input.contentId
+      );
   }
 
   updateMediaDesignResult(input: {

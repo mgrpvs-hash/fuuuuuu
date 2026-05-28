@@ -116,6 +116,16 @@ async function main(): Promise<void> {
       sourcePath,
       language: "ru",
       title: LONG_TITLE_RU,
+      subtitle: "Комфорт и забота на каждом этапе",
+      bulletPoints:
+        variant === "educational"
+          ? [
+              "Удобная зона ожидания",
+              "Внимание к каждому пациенту",
+              "Современное пространство для приёма"
+            ]
+          : [],
+      overlayDensity: variant === "educational" ? "detailed" : "medium",
       variant,
       outputPath
     });
@@ -131,6 +141,14 @@ async function main(): Promise<void> {
     });
     if (centerVariance <= 1.5) {
       throw new Error(`Center area appears blank for ${variant}: variance=${centerVariance}`);
+    }
+    if (variant === "educational") {
+      if (result.layoutMetadata.overlayDensity !== "detailed") {
+        throw new Error(`Educational variant must use detailed overlay density`);
+      }
+      if (result.layoutMetadata.bulletCount < 2 || result.layoutMetadata.bulletCount > 3) {
+        throw new Error(`Educational variant bullet count should be between 2 and 3`);
+      }
     }
 
     console.log("media-design debug", {
