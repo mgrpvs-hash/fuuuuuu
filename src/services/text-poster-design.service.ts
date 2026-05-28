@@ -16,7 +16,10 @@ export const TEXT_POSTER_STYLE_VARIANTS = [
   "clinic_announcement",
   "minimalist_quote",
   "service_card",
-  "educational_card"
+  "educational_card",
+  "premium_gradient",
+  "infographic_3_points",
+  "carousel_cover"
 ] as const;
 
 export type TextPosterStyleVariant = (typeof TEXT_POSTER_STYLE_VARIANTS)[number];
@@ -85,6 +88,33 @@ const THEMES: Record<TextPosterStyleVariant, PosterTheme> = {
     title: "#14324b",
     subtitle: "#2f5f86",
     accent: "#4e87b6"
+  },
+  premium_gradient: {
+    bgStart: "#edf4ff",
+    bgEnd: "#dde9f9",
+    cardFill: "#ffffff",
+    cardStroke: "#c6d8ee",
+    title: "#1a3550",
+    subtitle: "#365f83",
+    accent: "#7aa4c8"
+  },
+  infographic_3_points: {
+    bgStart: "#f3f8ff",
+    bgEnd: "#e2edf9",
+    cardFill: "#ffffff",
+    cardStroke: "#cddff2",
+    title: "#15324b",
+    subtitle: "#2f6089",
+    accent: "#5a8dbc"
+  },
+  carousel_cover: {
+    bgStart: "#f4f9ff",
+    bgEnd: "#e4eefb",
+    cardFill: "#ffffff",
+    cardStroke: "#d0e0f2",
+    title: "#17344e",
+    subtitle: "#396489",
+    accent: "#78a0c5"
   }
 };
 
@@ -157,6 +187,9 @@ function chooseStyleVariant(input: {
   if (/(анонс|новый|announcement|doctor|врач)/i.test(text)) return "clinic_announcement";
   if (/(цитата|quote|minimal|премиальн)/i.test(text)) return "minimalist_quote";
   if (/(услуг|service)/i.test(text)) return "service_card";
+  if (/(premium|дорого|люкс)/i.test(text)) return "premium_gradient";
+  if (/(карусел|carousel cover)/i.test(text)) return "carousel_cover";
+  if (/(инфограф|3 пункта|3 points)/i.test(text)) return "infographic_3_points";
   if (/(образоват|инфограф|education)/i.test(text)) return "educational_card";
   return "medical_tip";
 }
@@ -233,7 +266,8 @@ export class TextPosterDesignService {
     const titleLines = wrap(title, contentWidth, titleSize, 2);
     const subtitleLines = wrap(subtitle, contentWidth, subtitleSize, 2);
 
-    const overlayDensity = input.overlayDensity ?? (variant === "educational_card" ? "detailed" : "medium");
+    const overlayDensity =
+      input.overlayDensity ?? (variant === "educational_card" || variant === "infographic_3_points" ? "detailed" : "medium");
     const rawBulletCandidates =
       input.bulletPoints && input.bulletPoints.length
         ? input.bulletPoints
@@ -259,7 +293,11 @@ export class TextPosterDesignService {
 
     const bulletSvg =
       overlayDensity === "detailed" &&
-      (variant === "morning_health" || variant === "medical_tip" || variant === "educational_card" || variant === "service_card")
+      (variant === "morning_health" ||
+        variant === "medical_tip" ||
+        variant === "educational_card" ||
+        variant === "service_card" ||
+        variant === "infographic_3_points")
         ? bulletLinesToRender
             .map(
               (line, index) =>

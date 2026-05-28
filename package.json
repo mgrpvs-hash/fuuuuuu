@@ -19,10 +19,12 @@
     "test:media-design-latest": "tsx src/scripts/test-media-design-latest.ts",
     "test:text-poster-design": "tsx src/scripts/test-text-poster-design.ts",
     "test:text-poster-flow": "tsx src/scripts/test-text-poster-flow.ts",
+    "test:openai-image": "tsx src/scripts/test-openai-image.ts",
     "test:design-variants": "tsx src/scripts/test-design-variants.ts",
     "test:caption-format": "tsx src/scripts/test-caption-format.ts",
     "test:assistant": "tsx src/scripts/test-assistant.ts",
     "test:draft-instructions": "tsx src/scripts/test-draft-instructions.ts",
+    "test:agent-router": "tsx src/scripts/test-agent-router.ts",
     "debug:instagram-access": "tsx src/scripts/debug-instagram-access.ts"
   },
   "keywords": [

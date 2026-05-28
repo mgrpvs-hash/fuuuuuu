@@ -24,6 +24,15 @@ const schema = z
     OPENAI_API_KEY: z.string().min(10, "OPENAI_API_KEY is required"),
     OPENAI_MODEL: z.string().default("gpt-4.1-mini"),
     OPENAI_TIMEOUT_MS: z.coerce.number().int().min(1000).max(120000).default(30000),
+    OPENAI_IMAGE_GENERATION_ENABLED: z.preprocess(
+      (value) => {
+        if (typeof value === "boolean") return value;
+        if (typeof value === "string") return value.trim().toLowerCase() === "true";
+        return false;
+      },
+      z.boolean()
+    ),
+    OPENAI_IMAGE_MODEL: z.string().default("gpt-image-1"),
 
     META_APP_ID: z.string().optional(),
     META_APP_SECRET: z.string().optional(),

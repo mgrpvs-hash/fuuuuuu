@@ -5,6 +5,8 @@ import { createTelegramBot } from "./bot/bot.js";
 import { env } from "./config/env.js";
 import { AppDatabase } from "./db/database.js";
 import { AssistantCommandService } from "./services/assistant-command.service.js";
+import { AgentRouterService } from "./services/agent-router.service.js";
+import { CompetitorAnalysisService } from "./services/competitor-analysis.service.js";
 import { ContentWorkflowService } from "./services/content-workflow.service.js";
 import { DesignSelectionService } from "./services/design-selection.service.js";
 import { DraftEditService } from "./services/draft-edit.service.js";
@@ -12,6 +14,7 @@ import { InstagramService } from "./services/instagram.service.js";
 import { MediaDesignService } from "./services/media-design.service.js";
 import { MediaValidationService } from "./services/media-validation.service.js";
 import { OpenAiService } from "./services/openai.service.js";
+import { OpenAiImageService } from "./services/openai-image.service.js";
 import { RateLimitService } from "./services/rate-limit.service.js";
 import { SafetyService } from "./services/safety.service.js";
 import { SchedulerService } from "./services/scheduler.service.js";
@@ -61,7 +64,10 @@ async function bootstrap(): Promise<void> {
   const videoDesignService = new VideoDesignService();
   const designSelectionService = new DesignSelectionService();
   const assistantCommandService = new AssistantCommandService();
+  const agentRouterService = new AgentRouterService();
+  const competitorAnalysisService = new CompetitorAnalysisService();
   const aiService = new OpenAiService();
+  const openAiImageService = new OpenAiImageService();
   const draftEditService = new DraftEditService(db, assistantCommandService, aiService);
   const instagramService = new InstagramService();
   const workflowService = new ContentWorkflowService(
@@ -87,6 +93,9 @@ async function bootstrap(): Promise<void> {
     videoDesignService,
     designSelectionService,
     assistantCommandService,
+    agentRouterService,
+    competitorAnalysisService,
+    openAiImageService,
     draftEditService,
     rateLimitService
   });

@@ -23,7 +23,10 @@ async function main(): Promise<void> {
     "morning_health",
     "medical_tip",
     "clinic_announcement",
-    "minimalist_quote"
+    "minimalist_quote",
+    "premium_gradient",
+    "infographic_3_points",
+    "carousel_cover"
   ];
 
   for (const variant of variantsToTest) {

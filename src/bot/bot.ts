@@ -5,10 +5,13 @@ import path from "node:path";
 import sharp from "sharp";
 import { Context, Markup, Telegraf } from "telegraf";
 
+import { brandConfig, formatBrandSettings } from "../config/brand.js";
 import { env } from "../config/env.js";
 import { AppDatabase, DbGeneratedContent, DbMediaItem } from "../db/database.js";
+import { AgentRouterService } from "../services/agent-router.service.js";
 import { AssistantCommandService } from "../services/assistant-command.service.js";
 import { formatInstagramCaption } from "../services/caption-formatter.service.js";
+import { CompetitorAnalysisService } from "../services/competitor-analysis.service.js";
 import { ContentWorkflowService } from "../services/content-workflow.service.js";
 import { DesignSelectionService } from "../services/design-selection.service.js";
 import { DraftEditService } from "../services/draft-edit.service.js";
@@ -19,6 +22,7 @@ import {
 } from "../services/media-design.service.js";
 import { MediaValidationService } from "../services/media-validation.service.js";
 import { OpenAiService } from "../services/openai.service.js";
+import { OpenAiImageService } from "../services/openai-image.service.js";
 import { RateLimitService } from "../services/rate-limit.service.js";
 import { SafetyService } from "../services/safety.service.js";
 import { StorageService } from "../services/storage.service.js";
@@ -82,7 +86,10 @@ const POSTER_STYLE_LABELS: Record<TextPosterStyleVariant, string> = {
   clinic_announcement: "Announcement",
   minimalist_quote: "Minimalist",
   service_card: "Service card",
-  educational_card: "Educational"
+  educational_card: "Educational",
+  premium_gradient: "Premium gradient",
+  infographic_3_points: "Infographic 3 points",
+  carousel_cover: "Carousel cover"
 };
 
 function getUserId(ctx: Context): number | null {
@@ -160,6 +167,10 @@ function buildActionKeyboard(contentId: number) {
       Markup.button.callback("Less text on image", `less_overlay_text:${contentId}`)
     ],
     [
+      Markup.button.callback("Generate AI image", `ai_image_from_draft:${contentId}`),
+      Markup.button.callback("Make poster style", `poster_mode_from_draft:${contentId}`)
+    ],
+    [
       Markup.button.callback("Schedule", `schedule:${contentId}`),
       Markup.button.callback("Cancel", `cancel:${contentId}`)
     ]
@@ -198,6 +209,45 @@ function buildPosterStyleKeyboard(contentId: number) {
     [
       Markup.button.callback("Service", `posterstyle:${contentId}:service_card`),
       Markup.button.callback("Educational", `posterstyle:${contentId}:educational_card`)
+    ],
+    [
+      Markup.button.callback("Premium gradient", `posterstyle:${contentId}:premium_gradient`),
+      Markup.button.callback("Infographic 3pt", `posterstyle:${contentId}:infographic_3_points`)
+    ],
+    [Markup.button.callback("Carousel cover", `posterstyle:${contentId}:carousel_cover`)]
+  ]);
+}
+
+function buildVisualCreationKeyboard() {
+  return Markup.inlineKeyboard([
+    [
+      Markup.button.callback("Create poster", "make:poster"),
+      Markup.button.callback("Generate AI image", "make:ai-image")
+    ],
+    [
+      Markup.button.callback("Use uploaded photo", "make:uploaded"),
+      Markup.button.callback("Create carousel", "make:carousel")
+    ],
+    [
+      Markup.button.callback("Content idea", "make:idea"),
+      Markup.button.callback("Cancel", "make:cancel")
+    ]
+  ]);
+}
+
+function buildVisualDirectionKeyboard() {
+  return Markup.inlineKeyboard([
+    [
+      Markup.button.callback("Здоровье / утро", "visual_direction:morning"),
+      Markup.button.callback("Услуги клиники", "visual_direction:services")
+    ],
+    [
+      Markup.button.callback("Советы пациентам", "visual_direction:tips"),
+      Markup.button.callback("Оборудование", "visual_direction:equipment")
+    ],
+    [
+      Markup.button.callback("Команда", "visual_direction:team"),
+      Markup.button.callback("Свой текст", "visual_direction:custom")
     ]
   ]);
 }
@@ -223,6 +273,16 @@ function buildDraftClarifyKeyboard(contentId: number) {
       Markup.button.callback("Сделать короче", `caption_shorter:${contentId}`)
     ],
     [Markup.button.callback("Отмена", `cancel:${contentId}`)]
+  ]);
+}
+
+function buildActiveDraftVisualChoiceKeyboard() {
+  return Markup.inlineKeyboard([
+    [
+      Markup.button.callback("Изменить текущий", "draft_visual_choice:modify"),
+      Markup.button.callback("Новый визуал", "draft_visual_choice:new")
+    ],
+    [Markup.button.callback("Отмена", "draft_visual_choice:cancel")]
   ]);
 }
 
@@ -331,8 +391,11 @@ function choosePosterStyleFromText(text: string): TextPosterStyleVariant | undef
   const normalized = text.toLowerCase();
   if (/утро|morning|витамин/.test(normalized)) return "morning_health";
   if (/анонс|новост|announcement|врач/.test(normalized)) return "clinic_announcement";
-  if (/миним|minimal|quote|цитат|премиаль/.test(normalized)) return "minimalist_quote";
+  if (/миним|minimal|quote|цитат/.test(normalized)) return "minimalist_quote";
+  if (/премиаль|дорого|premium/.test(normalized)) return "premium_gradient";
   if (/услуг|service/.test(normalized)) return "service_card";
+  if (/карусел|carousel/.test(normalized)) return "carousel_cover";
+  if (/3\s*пункт|3\s*points/.test(normalized)) return "infographic_3_points";
   if (/образоват|инфограф|education/.test(normalized)) return "educational_card";
   if (/совет|tip/.test(normalized)) return "medical_tip";
   return undefined;
@@ -382,6 +445,7 @@ function sanitizePosterMedicalText(input: { caption: string; language: Language;
     .replace(/гарант\w*/gi, "")
     .replace(/без\s*риска/gi, "")
     .replace(/полностью\s*вылеч\w*/gi, "")
+    .replace(/пейте\s+витамины/gi, input.language === "en" ? "consider discussing supplements with a specialist" : "обсудите витамины со специалистом")
     .replace(/\s+/g, " ")
     .trim();
 
@@ -419,6 +483,9 @@ export function createTelegramBot(input: {
   videoDesignService: VideoDesignService;
   designSelectionService: DesignSelectionService;
   assistantCommandService: AssistantCommandService;
+  agentRouterService: AgentRouterService;
+  competitorAnalysisService: CompetitorAnalysisService;
+  openAiImageService: OpenAiImageService;
   draftEditService: DraftEditService;
   rateLimitService: RateLimitService;
 }): Telegraf {
@@ -434,12 +501,20 @@ export function createTelegramBot(input: {
     videoDesignService,
     designSelectionService,
     assistantCommandService,
+    agentRouterService,
+    competitorAnalysisService,
+    openAiImageService,
     draftEditService,
     rateLimitService
   } = input;
 
   const bot = new Telegraf(env.TELEGRAM_BOT_TOKEN);
   const draftSessions = new Map<number, DraftSession>();
+  const competitorAwaitingScreenshot = new Map<number, string>();
+  const pendingActiveDraftVisualChoice = new Map<
+    number,
+    { contentId: number; userPrompt: string; routeAction: "create_visual" | "create_text_poster" | "generate_ai_image" }
+  >();
 
   const setActiveDraftForUser = (userId: number, contentId: number, mediaItemId: number, mediaType: MediaType) => {
     const current = draftSessions.get(userId) ?? { mediaItemId, mediaType };
@@ -472,9 +547,12 @@ export function createTelegramBot(input: {
     userId: number;
     prompt: string;
     preferredStyle?: TextPosterStyleVariant;
+    announceStart?: boolean;
   }): Promise<void> => {
     const user = db.getUserByTelegramId(args.userId);
-    await args.ctx.reply("Создаю визуал для Instagram...");
+    if (args.announceStart !== false) {
+      await args.ctx.reply("Создаю визуал для Instagram...");
+    }
 
     const poster = await aiService.generateTextPosterContent({
       language: user.language,
@@ -489,8 +567,8 @@ export function createTelegramBot(input: {
     const posterDesign = await textPosterDesignService.createPoster({
       userPrompt: args.prompt,
       language: user.language,
-      brandName: "MC Clinic Medical",
-      brandHandle: "@mc_clinic.du",
+      brandName: brandConfig.clinicName,
+      brandHandle: brandConfig.handle,
       posterType: poster.posterType,
       styleVariant:
         args.preferredStyle ?? choosePosterStyleFromText(args.prompt) ?? mapPosterHintToVariant(poster.designHint),
@@ -578,6 +656,156 @@ export function createTelegramBot(input: {
     setActiveDraftForUser(args.userId, contentId, mediaItemId, "image");
   };
 
+  const createAiImageDraft = async (args: {
+    ctx: Context;
+    userId: number;
+    prompt: string;
+    style?: "clean" | "premium" | "minimal" | "educational" | "bold" | "medical";
+    announceStart?: boolean;
+  }): Promise<void> => {
+    const user = db.getUserByTelegramId(args.userId);
+    if (args.announceStart !== false) {
+      await args.ctx.reply("Создаю визуал для Instagram...");
+    }
+
+    if (!openAiImageService.isEnabled()) {
+      await args.ctx.reply("AI image generation unavailable, created branded poster instead.");
+      await createTextPosterDraft({
+        ctx: args.ctx,
+        userId: args.userId,
+        prompt: args.prompt,
+        announceStart: false
+      });
+      return;
+    }
+
+    try {
+      const generatedImage = await openAiImageService.generateImage({
+        prompt: args.prompt,
+        style: args.style,
+        brandName: brandConfig.clinicName,
+        language: user.language,
+        safetyContext: "illustrative visual only for medical marketing"
+      });
+      const tmpPath = path.resolve(process.cwd(), "tmp", "ai-generated", `img-${Date.now()}-${args.userId}.jpg`);
+      await ensureDir(path.dirname(tmpPath));
+      await sharp(generatedImage.imageBuffer).jpeg({ quality: 94, mozjpeg: true }).toFile(tmpPath);
+      const uploaded = await storageService.uploadMediaFromLocal({
+        localPath: tmpPath,
+        mediaType: "image"
+      });
+      const mediaItemId = db.createMediaItem({
+        telegramUserId: args.userId,
+        telegramFileId: `generated-ai-image:${Date.now()}`,
+        mediaType: "image",
+        localPath: tmpPath,
+        storageUrlOriginal: uploaded.publicUrl
+      });
+
+      const generated = await aiService.generateMedicalSafeContent({
+        language: user.language,
+        contentType: "post",
+        tone: user.tone,
+        description: args.prompt,
+        hasVideo: false,
+        hasImage: true,
+        safetyNotes: generatedImage.safetyLabelRequired ? ["illustrative visual"] : []
+      });
+      const contentId = db.createGeneratedContent({
+        telegramUserId: args.userId,
+        mediaItemId,
+        contentType: "post",
+        language: user.language,
+        description: args.prompt,
+        captions: generated.captions,
+        hashtags: generated.hashtags,
+        cta: generated.cta,
+        storyText: generated.storyText,
+        reelIdea: generated.reelIdea,
+        riskWarning: generated.riskWarning,
+        safeRewriteHint: generated.safeRewriteHint,
+        visualTitle: generated.visualTitle,
+        visualSubtitle: generated.visualSubtitle,
+        overlayBullets: generated.bulletPoints,
+        overlayDensity: generated.bulletPoints && generated.bulletPoints.length ? "detailed" : "medium",
+        designHint: generated.designHint
+      });
+      const media = db.getMediaItemById(mediaItemId);
+      if (!media) {
+        throw new AppError("Generated image media was not found", { code: "NOT_FOUND", statusCode: 404 });
+      }
+      await sendDraftPreview({
+        ctx: args.ctx,
+        userId: args.userId,
+        contentId,
+        media,
+        payload: {
+          contentType: "post",
+          language: user.language,
+          captions: generated.captions,
+          hashtags: generated.hashtags,
+          cta: generated.cta,
+          storyText: generated.storyText,
+          visualTitle: generated.visualTitle,
+          visualSubtitle: generated.visualSubtitle,
+          overlayBullets: generated.bulletPoints,
+          overlayDensity: generated.bulletPoints && generated.bulletPoints.length ? "detailed" : "medium",
+          designHint: generated.designHint,
+          bulletPoints: generated.bulletPoints,
+          reelIdea: generated.reelIdea,
+          riskWarning: generated.riskWarning,
+          safeRewriteHint: generated.safeRewriteHint
+        }
+      });
+      if (generatedImage.safetyLabelRequired) {
+        await args.ctx.reply("Иллюстративный визуал.");
+      }
+    } catch (error) {
+      botLogger.warn("AI image generation fallback to poster", {
+        error: error instanceof Error ? error.message : String(error)
+      });
+      await args.ctx.reply("AI image generation unavailable, created branded poster instead.");
+      await createTextPosterDraft({
+        ctx: args.ctx,
+        userId: args.userId,
+        prompt: args.prompt,
+        announceStart: false
+      });
+    }
+  };
+
+  const createVisualByRouter = async (args: {
+    ctx: Context;
+    userId: number;
+    text: string;
+    routeAction: "create_visual" | "create_text_poster" | "generate_ai_image";
+    style?: "clean" | "premium" | "minimal" | "educational" | "bold" | "medical";
+  }): Promise<void> => {
+    const mappedPosterStyle: TextPosterStyleVariant | undefined =
+      args.style === "premium"
+        ? "premium_gradient"
+        : args.style === "educational"
+          ? "infographic_3_points"
+          : args.style === "minimal"
+            ? "minimalist_quote"
+            : undefined;
+    if (args.routeAction === "generate_ai_image") {
+      await createAiImageDraft({
+        ctx: args.ctx,
+        userId: args.userId,
+        prompt: args.text,
+        style: args.style
+      });
+      return;
+    }
+    await createTextPosterDraft({
+      ctx: args.ctx,
+      userId: args.userId,
+      prompt: args.text,
+      preferredStyle: mappedPosterStyle
+    });
+  };
+
   const prepareMediaDesignAndPreview = async (args: {
     ctx: Context;
     contentId: number;
@@ -642,8 +870,8 @@ export function createTelegramBot(input: {
             const posterDesign = await textPosterDesignService.createPoster({
               userPrompt: draft.description,
               language: args.payload.language,
-              brandName: "MC Clinic Medical",
-              brandHandle: "@mc_clinic.du",
+              brandName: brandConfig.clinicName,
+              brandHandle: brandConfig.handle,
               posterType: args.payload.designHint ?? undefined,
               styleVariant: posterStyleVariant,
               visualTitle:
@@ -825,32 +1053,123 @@ export function createTelegramBot(input: {
 
   const handleAssistantChat = async (ctx: Context, userId: number, text: string): Promise<void> => {
     const user = db.getUserByTelegramId(userId);
-    if (assistantCommandService.isMedicalAdviceQuestion(text)) {
+    const route = agentRouterService.route({
+      userText: text,
+      hasActiveDraft: false,
+      hasAttachedMedia: false,
+      currentDraftSummary: "",
+      language: user.language
+    });
+
+    if (route.action === "medical_question_safe_response" || assistantCommandService.isMedicalAdviceQuestion(text)) {
       await ctx.reply(assistantCommandService.buildMedicalSafetyReply(user.language));
       return;
     }
 
-    const intent = assistantCommandService.classify(text);
-    if (intent.type === "approve_intent") {
+    if (route.action === "publish_intent") {
       await ctx.reply("Подтвердите публикацию кнопкой Approve.");
       return;
     }
-    if (intent.type === "generate_ideas") {
+    if (route.action === "schedule_intent") {
+      await ctx.reply("Сначала создайте draft, затем используйте кнопку Schedule.");
+      return;
+    }
+
+    if (route.action === "generate_ideas") {
       const ideas = await aiService.generateIdeas({ language: user.language, count: 10 });
       await ctx.reply(ideas);
       return;
     }
-    if (intent.type === "content_plan") {
+
+    if (route.action === "create_content_plan") {
       const plan = await aiService.generateWeeklyContentPlan({ language: user.language });
       await ctx.reply(plan);
       return;
     }
-    if (intent.type === "create_text_poster") {
+
+    if (route.action === "analyze_competitor") {
+      if (/(скину|пришлю|send screenshot|upload screenshot)/i.test(text)) {
+        competitorAwaitingScreenshot.set(userId, text);
+        await ctx.reply("Отправьте скрин конкурента, и я разберу его без копирования 1:1.");
+        return;
+      }
+      const analysis = competitorAnalysisService.analyze({
+        language: user.language,
+        userText: text,
+        competitorRef: route.params.competitorUrl
+      });
+      await ctx.reply(analysis);
+      return;
+    }
+
+    if (route.action === "create_text_poster") {
       await createTextPosterDraft({
         ctx,
         userId,
         prompt: text
       });
+      return;
+    }
+
+    if (route.action === "generate_ai_image") {
+      await createAiImageDraft({
+        ctx,
+        userId,
+        prompt: text,
+        style: route.params.style
+      });
+      return;
+    }
+
+    if (route.action === "create_visual") {
+      const topic = route.params.topic?.trim();
+      if (!topic || topic.length < 4) {
+        await ctx.reply("Сделаю визуал для Instagram. Выберите направление:", buildVisualDirectionKeyboard());
+        return;
+      }
+      await createVisualByRouter({
+        ctx,
+        userId,
+        text,
+        routeAction: route.params.needsImageGeneration ? "generate_ai_image" : "create_text_poster",
+        style: route.params.style
+      });
+      return;
+    }
+
+    if (route.action === "create_carousel") {
+      await createTextPosterDraft({
+        ctx,
+        userId,
+        prompt: `${text}. Сделай обложку карусели.`,
+        preferredStyle: "carousel_cover"
+      });
+      await ctx.reply("Для этого объёма удобно сделать карусель из нескольких слайдов.");
+      return;
+    }
+
+    if (route.action === "generate_caption") {
+      const generated = await aiService.generateMedicalSafeContent({
+        language: user.language,
+        contentType: "post",
+        tone: user.tone,
+        description: text,
+        hasVideo: false,
+        hasImage: false,
+        safetyNotes: []
+      });
+      const formatted = formatInstagramCaption({
+        selectedCaption: generated.captions[0] ?? generated.postCaption ?? "",
+        cta: generated.cta,
+        hashtags: generated.hashtags,
+        contentType: "post"
+      });
+      await ctx.reply(["Текст для Instagram:", formatted.caption].join("\n\n"));
+      return;
+    }
+
+    if (route.action === "unclear") {
+      await ctx.reply("Сделаю визуал. Выберите стиль или я подберу сам.", buildVisualCreationKeyboard());
       return;
     }
 
@@ -1011,7 +1330,7 @@ export function createTelegramBot(input: {
       [
         "Привет! Я AI content assistant для Instagram клиники.",
         "Можно отправить фото/видео для нового поста или написать обычный вопрос по контенту.",
-        "Команды: /newpost /ideas /contentplan /draft /cancel"
+        "Команды: /agent /make /competitors /brand /newpost /ideas /contentplan /draft /resetdraft /cancel"
       ].join("\n")
     );
   });
@@ -1024,10 +1343,15 @@ export function createTelegramBot(input: {
         "/health",
         "/whoami",
         "/newpost",
+        "/agent",
+        "/make",
+        "/competitors",
+        "/brand",
         "/ideas",
         "/contentplan",
         "/settings",
         "/draft",
+        "/resetdraft",
         "/cancel"
       ].join("\n")
     );
@@ -1035,6 +1359,24 @@ export function createTelegramBot(input: {
 
   bot.command("newpost", async (ctx) => {
     await ctx.reply("Отправьте фото/видео и затем описание. Я подготовлю дизайн и финальный caption для утверждения.");
+  });
+
+  bot.command("agent", async (ctx) => {
+    await ctx.reply(
+      "Я могу создавать посты, постеры, идеи, контент-планы, анализировать конкурентов по скринам и готовить публикации."
+    );
+  });
+
+  bot.command("make", async (ctx) => {
+    await ctx.reply("Выберите режим создания:", buildVisualCreationKeyboard());
+  });
+
+  bot.command("competitors", async (ctx) => {
+    await ctx.reply("Отправьте ссылку/скрин конкурента, и я разберу идеи без копирования.");
+  });
+
+  bot.command("brand", async (ctx) => {
+    await ctx.reply(formatBrandSettings());
   });
 
   bot.command("ideas", async (ctx) => {
@@ -1080,7 +1422,7 @@ export function createTelegramBot(input: {
         `language: ${user.language}`,
         "default content type: post",
         "media processing enabled: yes",
-        "brand name: MC Clinic Medical"
+        `brand name: ${brandConfig.clinicName}`
       ].join("\n")
     );
   });
@@ -1112,11 +1454,36 @@ export function createTelegramBot(input: {
     await ctx.reply("Текущий draft отменён.");
   });
 
+  bot.command("resetdraft", async (ctx) => {
+    const userId = getUserId(ctx);
+    if (!userId) return;
+    const session = draftSessions.get(userId);
+    if (session?.activeDraftContentId) {
+      session.activeDraftContentId = undefined;
+      draftSessions.set(userId, session);
+    }
+    pendingActiveDraftVisualChoice.delete(userId);
+    await ctx.reply("Active draft очищен.");
+  });
+
   bot.on("photo", async (ctx) => {
     const userId = getUserId(ctx);
     if (!userId) return;
     const photo = ctx.message.photo[ctx.message.photo.length - 1];
     if (!photo) return;
+
+    const competitorRequest = competitorAwaitingScreenshot.get(userId);
+    if (competitorRequest) {
+      competitorAwaitingScreenshot.delete(userId);
+      const user = db.getUserByTelegramId(userId);
+      const analysis = competitorAnalysisService.analyze({
+        language: user.language,
+        userText: competitorRequest,
+        hasScreenshot: true
+      });
+      await ctx.reply(analysis);
+      return;
+    }
 
     try {
       mediaValidationService.validateTelegramMetadata({
@@ -1203,6 +1570,23 @@ export function createTelegramBot(input: {
       }
 
       if (session?.activeDraftContentId) {
+        const activeDraft = db.getGeneratedContentByIdForTelegramUser(session.activeDraftContentId, userId);
+        const routed = agentRouterService.route({
+          userText: text,
+          hasActiveDraft: true,
+          hasAttachedMedia: Boolean(session.mediaItemId),
+          currentDraftSummary: `${activeDraft.description}\n${activeDraft.final_instagram_caption ?? ""}`,
+          language: activeDraft.language
+        });
+        if (routed.action === "create_visual" || routed.action === "create_text_poster" || routed.action === "generate_ai_image") {
+          pendingActiveDraftVisualChoice.set(userId, {
+            contentId: session.activeDraftContentId,
+            userPrompt: text,
+            routeAction: routed.action
+          });
+          await ctx.reply("Создать новый визуал или изменить текущий draft?", buildActiveDraftVisualChoiceKeyboard());
+          return;
+        }
         await handleDraftInstruction(ctx, userId, session.activeDraftContentId, text);
         return;
       }
@@ -1228,6 +1612,101 @@ export function createTelegramBot(input: {
       const appError = toAppError(error, "Text handling failed");
       await ctx.reply(`Ошибка обработки текста: ${appError.message}`);
     }
+  });
+
+  bot.action(/^make:(poster|ai-image|uploaded|carousel|idea|cancel)$/, async (ctx) => {
+    const userId = getUserId(ctx);
+    if (!userId) return;
+    const action = ctx.match[1];
+    await ctx.answerCbQuery();
+    if (action === "cancel") {
+      await ctx.reply("Ок, отменил.");
+      return;
+    }
+    if (action === "uploaded") {
+      await ctx.reply("Отправьте фото, и я сделаю branded draft.");
+      return;
+    }
+    if (action === "carousel") {
+      await createTextPosterDraft({
+        ctx,
+        userId,
+        prompt: "Сделай обложку карусели для медицинской клиники",
+        preferredStyle: "carousel_cover"
+      });
+      return;
+    }
+    if (action === "idea") {
+      const user = db.getUserByTelegramId(userId);
+      await ctx.reply(await aiService.generateIdeas({ language: user.language, count: 8 }));
+      return;
+    }
+    if (action === "ai-image") {
+      await createAiImageDraft({
+        ctx,
+        userId,
+        prompt: "создай реалистичную картинку современной медицинской комнаты",
+        style: "clean"
+      });
+      return;
+    }
+    await createTextPosterDraft({
+      ctx,
+      userId,
+      prompt: "Сделай постер без фото для Instagram клиники"
+    });
+  });
+
+  bot.action(/^visual_direction:(morning|services|tips|equipment|team|custom)$/, async (ctx) => {
+    const userId = getUserId(ctx);
+    if (!userId) return;
+    const direction = ctx.match[1];
+    await ctx.answerCbQuery();
+    const promptMap: Record<string, string> = {
+      morning: "Сделай картинку доброе утро для клиники в мягком тоне",
+      services: "Сделай визуал об услугах клиники и консультации",
+      tips: "Сделай визуал с безопасными советами пациентам",
+      equipment: "Сделай визуал про современное оборудование клиники",
+      team: "Сделай визуал про команду клиники в профессиональном стиле",
+      custom: "Сделай визуал с пользовательским текстом"
+    };
+    const prompt = promptMap[direction] ?? promptMap.custom;
+    await createTextPosterDraft({
+      ctx,
+      userId,
+      prompt
+    });
+  });
+
+  bot.action(/^draft_visual_choice:(modify|new|cancel)$/, async (ctx) => {
+    const userId = getUserId(ctx);
+    if (!userId) return;
+    const choice = ctx.match[1];
+    await ctx.answerCbQuery();
+    const pending = pendingActiveDraftVisualChoice.get(userId);
+    if (!pending) {
+      await ctx.reply("Запрос устарел. Повторите команду.");
+      return;
+    }
+    pendingActiveDraftVisualChoice.delete(userId);
+    if (choice === "cancel") {
+      await ctx.reply("Ок, оставляем текущий draft.");
+      return;
+    }
+    if (choice === "modify") {
+      await handleDraftInstruction(ctx, userId, pending.contentId, "сделай дизайн по-другому");
+      return;
+    }
+    const draft = db.getGeneratedContentByIdForTelegramUser(pending.contentId, userId);
+    const prompt = /вместо этой|сделай сам картинку/i.test(pending.userPrompt)
+      ? draft.description
+      : pending.userPrompt;
+    await createVisualByRouter({
+      ctx,
+      userId,
+      text: prompt,
+      routeAction: pending.routeAction
+    });
   });
 
   bot.action(/^ctype:(post|reel|story)$/, async (ctx) => {
@@ -1505,7 +1984,7 @@ export function createTelegramBot(input: {
   });
 
   bot.action(
-    /^posterstyle:(\d+):(morning_health|medical_tip|clinic_announcement|minimalist_quote|service_card|educational_card)$/,
+    /^posterstyle:(\d+):(morning_health|medical_tip|clinic_announcement|minimalist_quote|service_card|educational_card|premium_gradient|infographic_3_points|carousel_cover)$/,
     async (ctx) => {
       const userId = getUserId(ctx);
       if (!userId) return;
@@ -1630,6 +2109,44 @@ export function createTelegramBot(input: {
     } catch (error) {
       const appError = toAppError(error, "Less overlay text failed");
       await ctx.reply(`Ошибка overlay: ${appError.message}`);
+    }
+  });
+
+  bot.action(/^ai_image_from_draft:(\d+)$/, async (ctx) => {
+    const userId = getUserId(ctx);
+    if (!userId) return;
+    const contentId = parseActionContentId(ctx.match[1]);
+    await ctx.answerCbQuery();
+    try {
+      const draft = db.getGeneratedContentByIdForTelegramUser(contentId, userId);
+      await createAiImageDraft({
+        ctx,
+        userId,
+        prompt: draft.description,
+        style: "clean"
+      });
+    } catch (error) {
+      const appError = toAppError(error, "AI image from draft failed");
+      await ctx.reply(`Ошибка AI image: ${appError.message}`);
+    }
+  });
+
+  bot.action(/^poster_mode_from_draft:(\d+)$/, async (ctx) => {
+    const userId = getUserId(ctx);
+    if (!userId) return;
+    const contentId = parseActionContentId(ctx.match[1]);
+    await ctx.answerCbQuery();
+    try {
+      const draft = db.getGeneratedContentByIdForTelegramUser(contentId, userId);
+      await createTextPosterDraft({
+        ctx,
+        userId,
+        prompt: draft.description,
+        preferredStyle: choosePosterStyleFromText(draft.description)
+      });
+    } catch (error) {
+      const appError = toAppError(error, "Poster mode from draft failed");
+      await ctx.reply(`Ошибка poster mode: ${appError.message}`);
     }
   });
 
