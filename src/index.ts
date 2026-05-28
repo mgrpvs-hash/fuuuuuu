@@ -6,12 +6,14 @@ import { env } from "./config/env.js";
 import { AppDatabase } from "./db/database.js";
 import { ContentWorkflowService } from "./services/content-workflow.service.js";
 import { InstagramService } from "./services/instagram.service.js";
+import { MediaDesignService } from "./services/media-design.service.js";
 import { MediaValidationService } from "./services/media-validation.service.js";
 import { OpenAiService } from "./services/openai.service.js";
 import { RateLimitService } from "./services/rate-limit.service.js";
 import { SafetyService } from "./services/safety.service.js";
 import { SchedulerService } from "./services/scheduler.service.js";
 import { StorageService } from "./services/storage.service.js";
+import { VideoDesignService } from "./services/video-design.service.js";
 import { logger } from "./utils/logger.js";
 
 function withTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<T> {
@@ -50,6 +52,8 @@ async function bootstrap(): Promise<void> {
   const safetyService = new SafetyService();
   const mediaValidationService = new MediaValidationService();
   const storageService = new StorageService();
+  const mediaDesignService = new MediaDesignService();
+  const videoDesignService = new VideoDesignService();
   const aiService = new OpenAiService();
   const instagramService = new InstagramService();
   const workflowService = new ContentWorkflowService(
@@ -70,6 +74,8 @@ async function bootstrap(): Promise<void> {
     workflowService,
     mediaValidationService,
     storageService,
+    mediaDesignService,
+    videoDesignService,
     rateLimitService
   });
 

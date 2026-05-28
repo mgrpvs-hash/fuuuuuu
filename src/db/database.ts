@@ -22,6 +22,8 @@ export interface DbGeneratedContent {
   risk_warning: string | null;
   safe_rewrite_hint: string | null;
   selected_caption: string | null;
+  use_original_media: number;
+  final_instagram_caption: string | null;
   status: DraftStatus;
   created_at: string;
   updated_at: string;
@@ -34,6 +36,11 @@ export interface DbMediaItem {
   media_type: MediaType;
   local_path: string;
   storage_url: string | null;
+  storage_url_original: string | null;
+  storage_url_processed: string | null;
+  processed_media_path: string | null;
+  media_processing_status: string;
+  media_design_version: string | null;
   created_at: string;
 }
 
@@ -62,9 +69,45 @@ export class AppDatabase {
     const mediaColumns = this.db.prepare("PRAGMA table_info(media_items)").all() as Array<{
       name: string;
     }>;
-    const hasStorageUrl = mediaColumns.some((column) => column.name === "storage_url");
-    if (!hasStorageUrl) {
-      this.db.exec("ALTER TABLE media_items ADD COLUMN storage_url TEXT");
+    const generatedColumns = this.db.prepare("PRAGMA table_info(generated_contents)").all() as Array<{
+      name: string;
+    }>;
+
+    const mediaColumnMigrations: Array<{ name: string; sql: string }> = [
+      { name: "storage_url", sql: "ALTER TABLE media_items ADD COLUMN storage_url TEXT" },
+      { name: "storage_url_original", sql: "ALTER TABLE media_items ADD COLUMN storage_url_original TEXT" },
+      { name: "storage_url_processed", sql: "ALTER TABLE media_items ADD COLUMN storage_url_processed TEXT" },
+      { name: "processed_media_path", sql: "ALTER TABLE media_items ADD COLUMN processed_media_path TEXT" },
+      {
+        name: "media_processing_status",
+        sql: "ALTER TABLE media_items ADD COLUMN media_processing_status TEXT NOT NULL DEFAULT 'pending'"
+      },
+      { name: "media_design_version", sql: "ALTER TABLE media_items ADD COLUMN media_design_version TEXT" }
+    ];
+
+    for (const migration of mediaColumnMigrations) {
+      const exists = mediaColumns.some((column) => column.name === migration.name);
+      if (!exists) {
+        this.db.exec(migration.sql);
+      }
+    }
+
+    const generatedColumnMigrations: Array<{ name: string; sql: string }> = [
+      {
+        name: "use_original_media",
+        sql: "ALTER TABLE generated_contents ADD COLUMN use_original_media INTEGER NOT NULL DEFAULT 0"
+      },
+      {
+        name: "final_instagram_caption",
+        sql: "ALTER TABLE generated_contents ADD COLUMN final_instagram_caption TEXT"
+      }
+    ];
+
+    for (const migration of generatedColumnMigrations) {
+      const exists = generatedColumns.some((column) => column.name === migration.name);
+      if (!exists) {
+        this.db.exec(migration.sql);
+      }
     }
   }
 
@@ -119,14 +162,24 @@ export class AppDatabase {
     telegramFileId: string;
     mediaType: MediaType;
     localPath: string;
-    storageUrl?: string;
+    storageUrlOriginal?: string;
   }): number {
     const user = this.getOrCreateUser(input.telegramUserId);
     const result = this.db
       .prepare(
-        "INSERT INTO media_items (user_id, telegram_file_id, media_type, local_path, storage_url, created_at) VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)"
+        `INSERT INTO media_items (
+          user_id, telegram_file_id, media_type, local_path, storage_url, storage_url_original,
+          media_processing_status, created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, 'pending', CURRENT_TIMESTAMP)`
       )
-      .run(user.id, input.telegramFileId, input.mediaType, input.localPath, input.storageUrl ?? null);
+      .run(
+        user.id,
+        input.telegramFileId,
+        input.mediaType,
+        input.localPath,
+        input.storageUrlOriginal ?? null,
+        input.storageUrlOriginal ?? null
+      );
     return Number(result.lastInsertRowid);
   }
 
@@ -137,7 +190,11 @@ export class AppDatabase {
   getLatestMediaItemWithStorageUrl(mediaType: MediaType = "image"): DbMediaItem | undefined {
     return this.db
       .prepare(
-        "SELECT * FROM media_items WHERE storage_url IS NOT NULL AND media_type = ? ORDER BY datetime(created_at) DESC, id DESC LIMIT 1"
+        `SELECT * FROM media_items
+         WHERE media_type = ?
+           AND COALESCE(storage_url_processed, storage_url_original, storage_url) IS NOT NULL
+         ORDER BY datetime(created_at) DESC, id DESC
+         LIMIT 1`
       )
       .get(mediaType) as DbMediaItem | undefined;
   }
@@ -161,8 +218,9 @@ export class AppDatabase {
       .prepare(
         `INSERT INTO generated_contents (
           user_id, media_item_id, content_type, language, description, captions_json, hashtags_json,
-          cta, story_text, reel_idea, risk_warning, safe_rewrite_hint, status, created_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'draft', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)`
+          cta, story_text, reel_idea, risk_warning, safe_rewrite_hint, use_original_media,
+          final_instagram_caption, status, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, NULL, 'draft', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)`
       )
       .run(
         user.id,
@@ -206,6 +264,45 @@ export class AppDatabase {
     this.db
       .prepare("UPDATE generated_contents SET selected_caption = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?")
       .run(caption, contentId);
+  }
+
+  setFinalInstagramCaption(contentId: number, caption: string): void {
+    this.db
+      .prepare(
+        "UPDATE generated_contents SET final_instagram_caption = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?"
+      )
+      .run(caption, contentId);
+  }
+
+  setUseOriginalMedia(contentId: number, useOriginal: boolean): void {
+    this.db
+      .prepare("UPDATE generated_contents SET use_original_media = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?")
+      .run(useOriginal ? 1 : 0, contentId);
+  }
+
+  updateMediaDesignResult(input: {
+    mediaItemId: number;
+    storageUrlProcessed?: string;
+    processedMediaPath?: string;
+    mediaProcessingStatus: "pending" | "processed" | "failed" | "skipped";
+    mediaDesignVersion?: string;
+  }): void {
+    this.db
+      .prepare(
+        `UPDATE media_items
+         SET storage_url_processed = ?,
+             processed_media_path = ?,
+             media_processing_status = ?,
+             media_design_version = ?
+         WHERE id = ?`
+      )
+      .run(
+        input.storageUrlProcessed ?? null,
+        input.processedMediaPath ?? null,
+        input.mediaProcessingStatus,
+        input.mediaDesignVersion ?? null,
+        input.mediaItemId
+      );
   }
 
   updateGeneratedStatus(contentId: number, status: DraftStatus): void {

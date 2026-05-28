@@ -4,13 +4,16 @@ import path from "node:path";
 import { Context, Markup, Telegraf } from "telegraf";
 
 import { env } from "../config/env.js";
-import { AppDatabase } from "../db/database.js";
+import { AppDatabase, DbMediaItem } from "../db/database.js";
+import { formatInstagramCaption } from "../services/caption-formatter.service.js";
 import { ContentWorkflowService } from "../services/content-workflow.service.js";
+import { MediaDesignService } from "../services/media-design.service.js";
 import { MediaValidationService } from "../services/media-validation.service.js";
 import { OpenAiService } from "../services/openai.service.js";
 import { RateLimitService } from "../services/rate-limit.service.js";
 import { SafetyService } from "../services/safety.service.js";
 import { StorageService } from "../services/storage.service.js";
+import { VideoDesignService } from "../services/video-design.service.js";
 import { ContentType, Language, MediaType } from "../types/domain.js";
 import { AppError, toAppError } from "../types/errors.js";
 import { ensureDir } from "../utils/fs.js";
@@ -23,6 +26,18 @@ type DraftSession = {
   contentType?: ContentType;
   language?: Language;
   awaitingScheduleForContentId?: number;
+};
+
+type GeneratedPayload = {
+  contentType: ContentType;
+  language: Language;
+  captions: string[];
+  hashtags: string[];
+  cta: string;
+  storyText: string;
+  reelIdea?: string | null;
+  riskWarning?: string | null;
+  safeRewriteHint?: string | null;
 };
 
 const botLogger = logger.child({ component: "telegram-bot" });
@@ -57,11 +72,36 @@ function parseActionContentId(raw: string): number {
   return parsed;
 }
 
+function parseJsonStringArray(raw: string): string[] {
+  try {
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed)) {
+      return [];
+    }
+    return parsed.map((item) => String(item ?? "").trim()).filter(Boolean);
+  } catch {
+    return [];
+  }
+}
+
+function deriveVisualTitle(language: Language, selectedCaption: string): string {
+  const normalized = selectedCaption.replace(/\s+/g, " ").trim();
+  if (!normalized) {
+    return language === "en" ? "Modern equipment at our clinic" : "Современное оборудование в клинике";
+  }
+  const firstSentence = normalized.split(/[.!?]/)[0]?.trim() ?? normalized;
+  return firstSentence.slice(0, 90);
+}
+
 function buildActionKeyboard(contentId: number) {
   return Markup.inlineKeyboard([
     [
       Markup.button.callback("Approve", `approve:${contentId}`),
-      Markup.button.callback("Regenerate", `regenerate:${contentId}`)
+      Markup.button.callback("Regenerate text", `regenerate_text:${contentId}`)
+    ],
+    [
+      Markup.button.callback("Regenerate design", `regenerate_design:${contentId}`),
+      Markup.button.callback("Use original photo", `use_original:${contentId}`)
     ],
     [
       Markup.button.callback("Schedule", `schedule:${contentId}`),
@@ -79,9 +119,16 @@ function formatGeneratedPreview(payload: {
   reelIdea?: string | null;
   riskWarning?: string | null;
   safeRewriteHint?: string | null;
+  finalCaption: string;
+  captionWarning?: string;
+  designWarning?: string;
+  useOriginalMedia: boolean;
 }): string {
   return [
     `Draft #${payload.contentId}`,
+    payload.useOriginalMedia ? "⚠️ Будет опубликовано исходное фото без дизайна." : "",
+    payload.designWarning ? `⚠️ ${payload.designWarning}` : "",
+    payload.captionWarning ? `⚠️ ${payload.captionWarning}` : "",
     "",
     "Caption options:",
     ...payload.captions.map((caption, index) => `${index + 1}. ${caption}`),
@@ -89,11 +136,13 @@ function formatGeneratedPreview(payload: {
     `CTA: ${payload.cta}`,
     "",
     `Hashtags: ${payload.hashtags.join(" ")}`,
-    "",
-    `Story text: ${payload.storyText}`,
     payload.reelIdea ? `\nReel idea: ${payload.reelIdea}` : "",
     payload.riskWarning ? `\nSafety warning: ${payload.riskWarning}` : "",
-    payload.safeRewriteHint ? `\nSafer wording hint: ${payload.safeRewriteHint}` : ""
+    payload.safeRewriteHint ? `\nSafer wording hint: ${payload.safeRewriteHint}` : "",
+    payload.storyText ? `\nStory text: ${payload.storyText}` : "",
+    "",
+    "Текст, который будет опубликован в Instagram:",
+    payload.finalCaption
   ]
     .filter(Boolean)
     .join("\n");
@@ -107,6 +156,24 @@ async function safeReply(ctx: Context, text: string): Promise<void> {
   await ctx.telegram.sendMessage(chatId, text);
 }
 
+async function sendPreviewPhotoIfExists(ctx: Context, previewPath: string | null): Promise<void> {
+  if (!previewPath) {
+    return;
+  }
+  const chatId = getChatId(ctx);
+  if (!chatId) {
+    return;
+  }
+
+  try {
+    const source = await fs.readFile(previewPath);
+    await ctx.telegram.sendPhoto(chatId, { source }, { caption: "Processed preview" });
+  } catch (error) {
+    const appError = toAppError(error, "Preview upload failed");
+    await safeReply(ctx, `Не удалось отправить preview: ${appError.message}`);
+  }
+}
+
 export function createTelegramBot(input: {
   db: AppDatabase;
   aiService: OpenAiService;
@@ -114,6 +181,8 @@ export function createTelegramBot(input: {
   workflowService: ContentWorkflowService;
   mediaValidationService: MediaValidationService;
   storageService: StorageService;
+  mediaDesignService: MediaDesignService;
+  videoDesignService: VideoDesignService;
   rateLimitService: RateLimitService;
 }): Telegraf {
   const {
@@ -123,11 +192,124 @@ export function createTelegramBot(input: {
     workflowService,
     mediaValidationService,
     storageService,
+    mediaDesignService,
+    videoDesignService,
     rateLimitService
   } = input;
 
   const bot = new Telegraf(env.TELEGRAM_BOT_TOKEN);
   const draftSessions = new Map<number, DraftSession>();
+
+  const prepareMediaDesignAndPreview = async (args: {
+    ctx: Context;
+    contentId: number;
+    media: DbMediaItem;
+    payload: GeneratedPayload;
+    forceUseOriginal?: boolean;
+  }): Promise<{ finalCaption: string; captionWarning?: string; designWarning?: string; useOriginalMedia: boolean }> => {
+    const selectedCaption = args.payload.captions[0] ?? "";
+    db.selectCaption(args.contentId, selectedCaption);
+
+    const formatted = formatInstagramCaption({
+      selectedCaption,
+      cta: args.payload.cta,
+      hashtags: args.payload.hashtags,
+      contentType: args.payload.contentType
+    });
+    db.setFinalInstagramCaption(args.contentId, formatted.caption);
+    db.setUseOriginalMedia(args.contentId, args.forceUseOriginal ? true : false);
+
+    let designWarning: string | undefined;
+    let useOriginalMedia = Boolean(args.forceUseOriginal);
+    let previewPath: string | null = null;
+
+    if (!useOriginalMedia) {
+      try {
+        if (args.media.media_type === "image") {
+          const imageDesign = await mediaDesignService.createBrandedPostImage({
+            sourcePath: args.media.local_path,
+            language: args.payload.language,
+            title: deriveVisualTitle(args.payload.language, selectedCaption)
+          });
+          const uploaded = await storageService.uploadMediaFromLocal({
+            localPath: imageDesign.outputPath,
+            mediaType: "image"
+          });
+          db.updateMediaDesignResult({
+            mediaItemId: args.media.id,
+            storageUrlProcessed: uploaded.publicUrl,
+            processedMediaPath: imageDesign.outputPath,
+            mediaProcessingStatus: "processed",
+            mediaDesignVersion: imageDesign.designVersion
+          });
+          previewPath = imageDesign.outputPath;
+        } else {
+          const videoDesign = await videoDesignService.createStyledReel({
+            sourcePath: args.media.local_path,
+            language: args.payload.language,
+            title: deriveVisualTitle(args.payload.language, selectedCaption)
+          });
+          const uploaded = await storageService.uploadMediaFromLocal({
+            localPath: videoDesign.outputPath,
+            mediaType: "video"
+          });
+          db.updateMediaDesignResult({
+            mediaItemId: args.media.id,
+            storageUrlProcessed: uploaded.publicUrl,
+            processedMediaPath: videoDesign.outputPath,
+            mediaProcessingStatus: "processed",
+            mediaDesignVersion: videoDesign.designVersion
+          });
+          previewPath = videoDesign.coverImagePath;
+          designWarning = videoDesign.warning;
+        }
+      } catch (error) {
+        const appError = toAppError(error, "Media design processing failed");
+        db.updateMediaDesignResult({
+          mediaItemId: args.media.id,
+          mediaProcessingStatus: "failed"
+        });
+        db.setUseOriginalMedia(args.contentId, true);
+        useOriginalMedia = true;
+        designWarning = `Не удалось создать дизайн: ${appError.message}`;
+      }
+    }
+
+    await sendPreviewPhotoIfExists(args.ctx, previewPath);
+    return {
+      finalCaption: formatted.caption,
+      captionWarning: formatted.warning,
+      designWarning,
+      useOriginalMedia
+    };
+  };
+
+  const sendDraftPreview = async (args: {
+    ctx: Context;
+    contentId: number;
+    media: DbMediaItem;
+    payload: GeneratedPayload;
+    forceUseOriginal?: boolean;
+  }): Promise<void> => {
+    const designResult = await prepareMediaDesignAndPreview(args);
+    await args.ctx.reply(
+      formatGeneratedPreview({
+        contentId: args.contentId,
+        captions: args.payload.captions,
+        hashtags: args.payload.hashtags,
+        cta: args.payload.cta,
+        storyText: args.payload.storyText,
+        reelIdea: args.payload.reelIdea,
+        riskWarning: args.payload.riskWarning,
+        safeRewriteHint: args.payload.safeRewriteHint,
+        finalCaption: designResult.finalCaption,
+        captionWarning: designResult.captionWarning,
+        designWarning: designResult.designWarning,
+        useOriginalMedia: designResult.useOriginalMedia
+      }),
+      buildActionKeyboard(args.contentId)
+    );
+  };
 
   bot.use(async (ctx, next) => {
     const userId = getUserId(ctx);
@@ -318,7 +500,7 @@ export function createTelegramBot(input: {
         telegramFileId: photo.file_id,
         mediaType: "image",
         localPath,
-        storageUrl: uploaded.publicUrl
+        storageUrlOriginal: uploaded.publicUrl
       });
       draftSessions.set(userId, { mediaItemId, mediaType: "image", description: ctx.message.caption });
       await ctx.reply("Фото получено и загружено в storage. Отправьте текстовое описание для поста.");
@@ -352,7 +534,7 @@ export function createTelegramBot(input: {
         telegramFileId: video.file_id,
         mediaType: "video",
         localPath,
-        storageUrl: uploaded.publicUrl
+        storageUrlOriginal: uploaded.publicUrl
       });
       draftSessions.set(userId, { mediaItemId, mediaType: "video", description: ctx.message.caption });
       await ctx.reply("Видео получено и загружено в storage. Отправьте текстовое описание для контента.");
@@ -473,11 +655,22 @@ export function createTelegramBot(input: {
         riskWarning: generated.riskWarning,
         safeRewriteHint: generated.safeRewriteHint
       });
-      db.selectCaption(contentId, generated.captions[0]);
 
-      await ctx.reply(
-        formatGeneratedPreview({
-          contentId,
+      const media = db.getMediaItemById(session.mediaItemId);
+      if (!media) {
+        throw new AppError("Media not found for draft session", {
+          code: "NOT_FOUND",
+          statusCode: 404
+        });
+      }
+
+      await sendDraftPreview({
+        ctx,
+        contentId,
+        media,
+        payload: {
+          contentType: session.contentType,
+          language,
           captions: generated.captions,
           hashtags: generated.hashtags,
           cta: generated.cta,
@@ -485,9 +678,8 @@ export function createTelegramBot(input: {
           reelIdea: generated.reelIdea,
           riskWarning: generated.riskWarning,
           safeRewriteHint: generated.safeRewriteHint
-        }),
-        buildActionKeyboard(contentId)
-      );
+        }
+      });
     } catch (error) {
       const appError = toAppError(error, "Generation failed");
       await ctx.reply(`Ошибка генерации: ${appError.message}`);
@@ -510,7 +702,7 @@ export function createTelegramBot(input: {
     }
   });
 
-  bot.action(/^regenerate:(\d+)$/, async (ctx) => {
+  bot.action(/^regenerate(?:_text)?:(\d+)$/, async (ctx) => {
     const userId = getUserId(ctx);
     if (!userId) return;
     const contentId = parseActionContentId(ctx.match[1]);
@@ -546,11 +738,14 @@ export function createTelegramBot(input: {
         riskWarning: generated.riskWarning,
         safeRewriteHint: generated.safeRewriteHint
       });
-      db.selectCaption(newContentId, generated.captions[0]);
       await ctx.answerCbQuery();
-      await ctx.reply(
-        formatGeneratedPreview({
-          contentId: newContentId,
+      await sendDraftPreview({
+        ctx,
+        contentId: newContentId,
+        media,
+        payload: {
+          contentType: draft.content_type,
+          language: draft.language,
           captions: generated.captions,
           hashtags: generated.hashtags,
           cta: generated.cta,
@@ -558,13 +753,71 @@ export function createTelegramBot(input: {
           reelIdea: generated.reelIdea,
           riskWarning: generated.riskWarning,
           safeRewriteHint: generated.safeRewriteHint
-        }),
-        buildActionKeyboard(newContentId)
-      );
+        }
+      });
     } catch (error) {
       const appError = toAppError(error, "Regenerate failed");
       await ctx.answerCbQuery();
       await ctx.reply(`Ошибка регенерации: ${appError.message}`);
+    }
+  });
+
+  bot.action(/^regenerate_design:(\d+)$/, async (ctx) => {
+    const userId = getUserId(ctx);
+    if (!userId) return;
+    const contentId = parseActionContentId(ctx.match[1]);
+    try {
+      const draft = db.getGeneratedContentByIdForTelegramUser(contentId, userId);
+      const media = db.getMediaItemById(draft.media_item_id);
+      if (!media) {
+        throw new AppError("Media not found", { code: "NOT_FOUND", statusCode: 404 });
+      }
+      await ctx.answerCbQuery("Design regenerating...");
+      await sendDraftPreview({
+        ctx,
+        contentId: draft.id,
+        media,
+        payload: {
+          contentType: draft.content_type,
+          language: draft.language,
+          captions: parseJsonStringArray(draft.captions_json),
+          hashtags: parseJsonStringArray(draft.hashtags_json),
+          cta: draft.cta,
+          storyText: draft.story_text,
+          reelIdea: draft.reel_idea,
+          riskWarning: draft.risk_warning,
+          safeRewriteHint: draft.safe_rewrite_hint
+        }
+      });
+    } catch (error) {
+      const appError = toAppError(error, "Regenerate design failed");
+      await ctx.answerCbQuery();
+      await ctx.reply(`Ошибка regenerate design: ${appError.message}`);
+    }
+  });
+
+  bot.action(/^use_original:(\d+)$/, async (ctx) => {
+    const userId = getUserId(ctx);
+    if (!userId) return;
+    const contentId = parseActionContentId(ctx.match[1]);
+    try {
+      const draft = db.getGeneratedContentByIdForTelegramUser(contentId, userId);
+      db.setUseOriginalMedia(contentId, true);
+      await ctx.answerCbQuery();
+      const finalCaption = draft.final_instagram_caption ?? draft.selected_caption ?? "";
+      await ctx.reply(
+        [
+          "Будет опубликовано исходное фото без дизайна.",
+          "",
+          "Текст, который будет опубликован в Instagram:",
+          finalCaption
+        ].join("\n"),
+        buildActionKeyboard(contentId)
+      );
+    } catch (error) {
+      const appError = toAppError(error, "Use original failed");
+      await ctx.answerCbQuery();
+      await ctx.reply(`Ошибка выбора оригинала: ${appError.message}`);
     }
   });
 
@@ -633,3 +886,4 @@ async function downloadTelegramFile(bot: Telegraf, fileId: string, mediaType: Me
   await fs.writeFile(filePath, Buffer.from(arrayBuffer));
   return filePath;
 }
+

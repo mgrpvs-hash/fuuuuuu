@@ -15,6 +15,11 @@ CREATE TABLE IF NOT EXISTS media_items (
   media_type TEXT NOT NULL CHECK(media_type IN ('image', 'video')),
   local_path TEXT NOT NULL,
   storage_url TEXT,
+  storage_url_original TEXT,
+  storage_url_processed TEXT,
+  processed_media_path TEXT,
+  media_processing_status TEXT NOT NULL DEFAULT 'pending',
+  media_design_version TEXT,
   created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
   FOREIGN KEY (user_id) REFERENCES users(id)
 );
@@ -34,6 +39,8 @@ CREATE TABLE IF NOT EXISTS generated_contents (
   risk_warning TEXT,
   safe_rewrite_hint TEXT,
   selected_caption TEXT,
+  use_original_media INTEGER NOT NULL DEFAULT 0,
+  final_instagram_caption TEXT,
   status TEXT NOT NULL DEFAULT 'draft' CHECK(status IN ('draft', 'approved', 'scheduled', 'published', 'failed')),
   created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
   updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,

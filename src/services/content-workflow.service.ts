@@ -61,22 +61,33 @@ export class ContentWorkflowService {
     if (!media) {
       return { success: false, message: "Media not found for this draft" };
     }
-    if (!media.storage_url) {
-      return { success: false, message: "Draft is stale. Please send a new photo." };
+    const useOriginalMedia = draft.use_original_media === 1;
+    const mediaUrl = useOriginalMedia
+      ? media.storage_url_original ?? media.storage_url
+      : media.storage_url_processed ?? null;
+
+    if (!mediaUrl) {
+      return {
+        success: false,
+        message: useOriginalMedia
+          ? "Original media URL is missing. Please send a new photo."
+          : "Processed media is not ready. Please use 'Regenerate design' or choose 'Use original photo'."
+      };
     }
 
     try {
-      await this.mediaValidationService.validateStoredFile(media.local_path, media.media_type);
+      if (useOriginalMedia) {
+        await this.mediaValidationService.validateStoredFile(media.local_path, media.media_type);
+      }
 
       const captions = JSON.parse(draft.captions_json) as string[];
-      const hashtags = JSON.parse(draft.hashtags_json) as string[];
-      const baseCaption = draft.selected_caption ?? captions[0] ?? "";
+      const baseCaption = draft.final_instagram_caption ?? draft.selected_caption ?? captions[0] ?? "";
       const withDisclaimer = this.safetyService.ensureMedicalDisclaimer(baseCaption, draft.language);
       this.safetyService.assertSafeForPublishing(withDisclaimer);
 
       let storageHost: string | null = null;
       try {
-        storageHost = new URL(media.storage_url).host;
+        storageHost = new URL(mediaUrl).host;
       } catch {
         storageHost = null;
       }
@@ -85,7 +96,8 @@ export class ContentWorkflowService {
         userId: draft.user_id,
         contentType: draft.content_type,
         mediaItemId: media.id,
-        storage_url_exists: media.storage_url ? "yes" : "no",
+        use_original_media: useOriginalMedia,
+        storage_url_exists: mediaUrl ? "yes" : "no",
         storage_url_host: storageHost,
         caption_length: withDisclaimer.length,
         igUserId: env.INSTAGRAM_BUSINESS_ACCOUNT_ID,
@@ -96,9 +108,9 @@ export class ContentWorkflowService {
       const result = await this.instagramService.publish({
         contentType: draft.content_type,
         mediaType: media.media_type,
-        mediaPathOrUrl: media.storage_url,
+        mediaPathOrUrl: mediaUrl,
         caption: withDisclaimer,
-        hashtags
+        hashtags: []
       });
 
       if (!result.success) {

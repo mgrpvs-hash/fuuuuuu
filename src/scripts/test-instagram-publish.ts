@@ -32,8 +32,9 @@ async function main(): Promise<void> {
   const publishFlag = (process.env.PUBLISH_TEST ?? "").toLowerCase() === "true";
   const db = await AppDatabase.init(env.DATABASE_URL);
   const media = db.getLatestMediaItemWithStorageUrl("image");
+  const mediaUrl = media?.storage_url_processed ?? media?.storage_url_original ?? media?.storage_url ?? null;
 
-  if (!media || !media.storage_url) {
+  if (!media || !mediaUrl) {
     console.log(
       "No media item with public storage_url found. Send a photo in Telegram first, then rerun npm run test:instagram-publish."
     );
@@ -47,7 +48,7 @@ async function main(): Promise<void> {
   const captionWithHashtags = `${caption}\n\n${hashtags.join(" ")}`.trim();
 
   try {
-    await instagram.validatePublicMediaUrl(media.storage_url, "image");
+    await instagram.validatePublicMediaUrl(mediaUrl, "image");
     console.log("Media URL validation: OK");
   } catch (error) {
     const appError =
@@ -63,7 +64,7 @@ async function main(): Promise<void> {
 
   try {
     const create = await instagram.createInstagramMediaContainer({
-      imageUrl: media.storage_url,
+      imageUrl: mediaUrl,
       contentType: "post",
       caption: captionWithHashtags
     });
