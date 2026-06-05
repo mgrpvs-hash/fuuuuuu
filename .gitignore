@@ -1,0 +1,11 @@
+node_modules
+dist
+.env
+data
+media
+*.log
+.secrets/
+*.env.local
+codex.env.local
+.env.codex
+.env.codex.local
